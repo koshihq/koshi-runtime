@@ -1,0 +1,7 @@
+bin/
+/koshi
+*.exe
+coverage.out
+.claude/
+CLAUDE.md
+MEMORY.md

@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-koshi-config
+data:
+  config.yaml: |
+    upstreams:
+      openai: "https://api.openai.com"
+      # anthropic: "https://api.anthropic.com"  # Uncomment to enable Anthropic provider
+
+    workloads:
+      - id: "example-agent"
+        type: "agent"
+        owner_team: "ml-team"
+        environment: "production"
+        identity:
+          mode: "header"
+          key: "x-genops-workload-id"
+        model_targets:
+          - provider: "openai"
+            model: "gpt-4"
+        policy_refs:
+          - "standard"
+
+    policies:
+      - id: "standard"
+        budgets:
+          rolling_tokens:
+            window_seconds: 300
+            limit_tokens: 100000
+            burst_tokens: 10000
+        guards:
+          max_tokens_per_request: 4096
+        decision_tiers:
+          tier1_auto:
+            action: "throttle"
+          tier3_platform:
+            action: "kill_workload"

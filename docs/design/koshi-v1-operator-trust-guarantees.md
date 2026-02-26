@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document defines externally observable operational guarantees provided by Koshi v1.
+This document defines externally observable operational guarantees provided by Koshi Runtime v1.
 
 These guarantees apply per replica unless explicitly stated.
 Only behaviors explicitly listed here are considered contract surfaces.
@@ -120,11 +120,11 @@ On SIGTERM:
 - `/healthz` reflects process liveness.
 - `/readyz` reflects enforcement readiness.
 - Degraded state causes readiness failure.
-- Health endpoints reflect Koshi process state only.
+- Health endpoints reflect Koshi Runtime process state only.
 
 ## 4. Explicit Non-Guarantees
 
-Koshi v1 does not provide:
+Koshi Runtime v1 does not provide:
 
 - Cross-replica budget coordination
 - Persistent budget state across restarts

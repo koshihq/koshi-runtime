@@ -1,6 +1,6 @@
 # Why Koshi Exists
 
-Koshi is a workload-scoped runtime enforcement plane for AI systems.
+Koshi Runtime is a workload-scoped runtime enforcement plane for AI systems.
 
 ## The Structural Problem
 
@@ -31,7 +31,7 @@ Existing infrastructure layers do not own this boundary.
 | OpenTelemetry | Telemetry | Observes but does not enforce |
 
 Rate limiting constrains request rate.
-Koshi mutates shared workload policy state before execution.
+Koshi Runtime mutates shared workload policy state before execution.
 
 These are distinct control surfaces.
 
@@ -72,7 +72,7 @@ Infrastructure-level enforcement is:
 - Enforced at the execution boundary.
 - Not subject to feature-flag drift.
 
-Koshi enforces policy regardless of application implementation.
+Koshi Runtime enforces policy regardless of application implementation.
 
 ## Why the Workload Boundary
 
@@ -96,9 +96,9 @@ Workload is the smallest stable unit suitable for deterministic runtime policy a
 Higher-level tenancy and SLA constructs may compose above workload.
 Workload remains the atomic enforcement unit.
 
-## What Koshi Introduces
+## What Koshi Runtime Introduces
 
-Koshi introduces a workload-scoped enforcement plane that:
+Koshi Runtime introduces a workload-scoped enforcement plane that:
 
 - Attaches policy at the workload boundary.
 - Executes enforcement per replica.
@@ -135,7 +135,7 @@ Cluster-level aggregation may be composed externally but is not required for per
 ## Why This Does Not Live in the Cloud Vendor
 
 Cloud providers can enforce account-level and service-level controls.
-Koshi enforces workload-scoped runtime policy at the execution boundary.
+Koshi Runtime enforces workload-scoped runtime policy at the execution boundary.
 
 Vendor-native controls:
 
@@ -149,7 +149,7 @@ Cloud vendors control services.
 Enterprises control workloads.
 
 Enforcement authority must exist where execution occurs.
-Koshi operates at that boundary.
+Koshi Runtime operates at that boundary.
 
 ## The Architectural Inevitability
 
@@ -169,7 +169,7 @@ The enforcement primitive must:
 - Mutate policy state before execution.
 - Remain deterministic under concurrency.
 
-Koshi provides a workload-scoped implementation of that primitive.
+Koshi Runtime provides a workload-scoped implementation of that primitive.
 
 ## What Happens Without It
 
@@ -194,4 +194,4 @@ They are compensating controls, not enforcement primitives.
 
 AI workloads introduce runtime mutation surfaces that existing infrastructure does not deterministically control.
 
-Koshi provides a workload-scoped, reservation-based enforcement boundary for AI runtime policy.
+Koshi Runtime provides a workload-scoped, reservation-based enforcement boundary for AI runtime policy.

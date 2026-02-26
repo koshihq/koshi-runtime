@@ -2,7 +2,7 @@
 
 ## Executive Framing
 
-Koshi enforces policy at the workload boundary, executing deterministically per replica using reservation-first accounting.
+Koshi Runtime enforces policy at the workload boundary, executing deterministically per replica using reservation-first accounting.
 
 - **Workload** is the smallest stable runtime identity to which policy attaches.
 - **Replica** is the execution surface where enforcement state mutates.
@@ -70,7 +70,7 @@ Workload is the atomic enforcement key.
 Each replica contains:
 
 - Application container
-- Koshi sidecar
+- Koshi Runtime sidecar
 - In-memory enforcement state
 
 Replica owns:

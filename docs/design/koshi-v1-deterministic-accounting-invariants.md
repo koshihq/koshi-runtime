@@ -2,12 +2,12 @@
 
 ## Purpose
 
-This document defines the runtime accounting and enforcement invariants guaranteed by Koshi v1.
+This document defines the runtime accounting and enforcement invariants guaranteed by Koshi Runtime v1.
 
 These invariants define the enforcement boundary of the system.
-If any invariant is violated, Koshi is not operating correctly.
+If any invariant is violated, Koshi Runtime is not operating correctly.
 
-Koshi v1 defines a reservation-first, non-negative, per-replica enforcement boundary for runtime AI workloads.
+Koshi Runtime v1 defines a reservation-first, non-negative, per-replica enforcement boundary for runtime AI workloads.
 
 All guarantees apply per replica unless explicitly stated.
 Cross-replica coordination is out of scope for v1.
@@ -44,7 +44,7 @@ This boundary defines the moment at which runtime enforcement is applied.
 
 ### Invariant
 
-Given identical system state, Koshi produces the same enforcement decision within a replica.
+Given identical system state, Koshi Runtime produces the same enforcement decision within a replica.
 
 Cluster-wide determinism is not guaranteed in v1.
 
@@ -309,7 +309,7 @@ Such changes require architectural versioning.
 
 ## Summary
 
-Koshi v1 guarantees, per replica:
+Koshi Runtime v1 guarantees, per replica:
 
 - Reservation-first deterministic enforcement
 - Atomic and linearizable reservation logic
@@ -328,7 +328,7 @@ Everything else is implementation detail.
 
 ## Forward Compatibility: Distributed Coordination Constraints
 
-Koshi v1 operates with replica-scoped enforcement state and no cross-replica coordination.
+Koshi Runtime v1 operates with replica-scoped enforcement state and no cross-replica coordination.
 
 Future versions may introduce shared state or distributed coordination.
 Such extensions must preserve the core enforcement invariants defined in this document.

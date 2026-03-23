@@ -1,6 +1,6 @@
 # Kubernetes Observability Guide
 
-This guide covers how to observe AI workload traffic through Koshi Runtime's listener mode — structured events, Prometheus metrics, and latency analysis.
+This guide covers how to read your governance posture through Koshi Runtime's listener mode — structured events, Prometheus metrics, and latency analysis that show exactly where policies would intervene at the execution boundary.
 
 ## Prerequisites
 
@@ -219,7 +219,9 @@ This does not mean all pods in a namespace or cluster share one live budget buck
 
 Use listener mode to validate policy shape, guard pressure, and local runtime overhead. Do not interpret it as fleet-wide enforcement simulation.
 
-## Interpreting Results Before Enabling Enforcement
+## From Posture Discovery to Enforcement
+
+Listener mode reveals your governance posture — the set of decisions the enforcement pipeline would make on live traffic. Use this section to validate that posture before enabling enforcement.
 
 ### Interpreting Shadow Decisions
 
@@ -231,7 +233,7 @@ Listener mode without explicit workloads is valid only when a `default_policy` i
 
 ### Pre-Enforcement Checklist
 
-Before switching from listener to enforcement mode, verify:
+Before activating enforcement on a posture you've validated in listener mode:
 
 1. **No unexpected `would_reject` events.** If `identity_missing` or `policy_not_found` appear, check that workload identity env vars are being injected correctly.
 

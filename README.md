@@ -1,8 +1,8 @@
 # Koshi Runtime
 
-Koshi Runtime is a workload-scoped runtime governance plane for AI systems. It deploys as a Kubernetes sidecar that observes and enforces deterministic policy at the workload boundary — token budgets, per-request guards, and tiered enforcement decisions — using reservation-first accounting.
+Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys as a Kubernetes sidecar that enforces deterministic policy at the workload boundary — token budgets, per-request guards, and tiered enforcement decisions — using reservation-first accounting.
 
-**Start with observation, enforce when ready.** Koshi ships in **listener mode** by default: the full enforcement pipeline runs on every request, but no traffic is ever blocked. Shadow decisions (`would_reject`, `would_throttle`, `would_kill`) are emitted as structured events and Prometheus metrics. When you're confident in your policies, switch to enforcement mode — same binary, same config shape, same metrics.
+**Discover your governance posture before enforcing it.** Koshi ships in **listener mode** by default: the full enforcement pipeline — identity resolution, policy lookup, guard evaluation, budget accounting — executes on every request, but no traffic is blocked. Shadow decisions (`would_reject`, `would_throttle`, `would_kill`) reveal exactly where your policies would intervene. When the posture matches your intent, enabling enforcement is a config change — same binary, same pipeline, same metrics.
 
 ## Quick Start: Kubernetes (Listener Mode)
 
@@ -54,6 +54,8 @@ Request → Identify workload (pod metadata) → Resolve policy → Extract max_
 
 ### Listener vs Enforcement Mode
 
+Both modes execute the same enforcement pipeline. Listener mode surfaces governance posture without affecting traffic; enforcement mode acts on it.
+
 | Behavior | Listener | Enforcement |
 |----------|----------|-------------|
 | Identity failure | Emit `would_reject`, proxy through | Return 403 |
@@ -61,8 +63,6 @@ Request → Identify workload (pod metadata) → Resolve policy → Extract max_
 | Kill decision | Emit `would_kill`, proxy through | Return 503 |
 | Metrics | `koshi_listener_*` series | `koshi_enforcement_*` series |
 | Default listen addr | `:15080` | `:8080` |
-
-Both modes run the identical enforcement pipeline. Listener mode swallows deny signals and emits shadow events instead.
 
 ### Workload Identity
 
@@ -241,13 +241,13 @@ Key Helm values:
 
 ## Enabling Enforcement
 
-When you're ready to enforce after observing in listener mode:
+When listener mode confirms your governance posture matches intent:
 
 1. Update the ConfigMap: change `mode.type` from `"listener"` to `"enforcement"`
 2. Define explicit workloads with `identity.mode: "header"` and `policy_refs`
 3. Restart the sidecar (rolling restart of your workloads)
 
-The binary, image, and Helm chart are unchanged. Only the config changes.
+The binary, image, and Helm chart are unchanged. Enforcement activates the same pipeline that listener mode already validated.
 
 ## Architecture
 

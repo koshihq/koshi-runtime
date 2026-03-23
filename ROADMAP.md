@@ -6,14 +6,14 @@ This roadmap describes the intended direction of Koshi Runtime — an open runti
 
 Koshi Runtime is a Kubernetes-native runtime substrate that sits at the workload boundary between application containers and upstream AI providers. It provides:
 
-- **Listener-first adoption.** Start by observing traffic without blocking anything. The full enforcement pipeline runs in shadow mode, emitting structured events and metrics that show exactly what would happen under enforcement.
+- **Listener-first adoption.** Discover your governance posture at the execution boundary before enforcing it. The full enforcement pipeline runs on every request in listener mode, emitting structured events and metrics that reveal exactly where policies would intervene — without blocking traffic.
 - **Structured governance signals.** Every request produces a machine-readable decision with a stable reason code — identity resolution, policy lookup, per-request guards, rolling budget accounting, and tiered enforcement.
 - **Config-driven mode switching.** The same binary and image supports both listener and enforcement modes. Moving from observation to enforcement is a config change, not a new deployment.
 - **Auditable, reversible, bounded behavior.** Reservation-first token accounting with reconciliation. Deterministic enforcement decisions. Safe defaults that fail open on infrastructure and fail closed on policy.
 
 ## Available Now
 
-- **Listener (shadow) mode** — full enforcement pipeline runs on every request without blocking traffic. Shadow decisions (`would_reject`, `would_throttle`, `would_kill`) are emitted as structured events.
+- **Listener mode (governance posture discovery)** — full enforcement pipeline runs on every request without blocking traffic. Shadow decisions (`would_reject`, `would_throttle`, `would_kill`) reveal where policies would intervene, letting teams validate their governance posture before enabling enforcement.
 - **Sidecar injection** — mutating admission webhook injects the koshi-listener sidecar into pods in labeled namespaces. Webhook `failurePolicy: Ignore` ensures pods still create if the injector is down.
 - **Structured events and metrics** — JSON events on stdout with `stream: event` for governance decisions, `stream: runtime` for operational logs. Prometheus metrics (`koshi_listener_decisions_total`, `koshi_listener_tokens_total`, `koshi_listener_latency_seconds`) for dashboard and alerting.
 - **Reservation-first token accounting** — budget pre-deducted before proxying, reconciled with actual usage after response. Rolling window with optional burst. Budget floor at zero.
@@ -50,6 +50,6 @@ These are excluded by design, not deferred. They define the boundary between the
 
 - **One runtime.** Listener and enforcement are modes of the same binary, not separate products.
 - **Safe by default.** Kubernetes installation is opt-in per namespace, webhook failure is non-blocking, base-URL injection never clobbers existing env vars.
-- **Transparent behavior.** Every decision is observable. Shadow mode produces the same signals enforcement would, without affecting traffic.
+- **Transparent behavior.** Every decision is observable. Listener mode surfaces the same governance posture enforcement would act on, without affecting traffic.
 - **Portable observability.** Structured events and Prometheus metrics work with any log aggregator or monitoring stack. No ecosystem lock-in required.
 - **Additive evolution.** New capabilities are added without hiding or replacing core mechanics. The runtime's accounting model, enforcement pipeline, and event schema are stable public surfaces.

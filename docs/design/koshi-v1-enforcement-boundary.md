@@ -137,6 +137,8 @@ Workload is:
 
 Workload is the lowest stable abstraction that preserves deterministic enforcement semantics.
 
+Listener mode leverages this property: by running the full enforcement pipeline without acting on deny signals, it reveals the governance posture the workload boundary would apply on live traffic. Higher-layer controls (cost dashboards, provider-side rate limits, team-level budgets) operate above the execution boundary and cannot surface the same request-level policy pressure at that boundary. Listener mode makes that posture observable before it becomes consequential.
+
 ## VI. Failure Domain Alignment
 
 - Workloads are stable.

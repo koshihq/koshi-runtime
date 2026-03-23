@@ -103,7 +103,7 @@ func TestWebhook_OptOut(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "my-pod",
-			Annotations: map[string]string{"koshi.io/inject": "false"},
+			Annotations: map[string]string{"runtime.getkoshi.ai/inject": "false"},
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{Name: "app"}},
@@ -146,7 +146,7 @@ func TestWebhook_PolicyOverride(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "my-pod",
-			Annotations: map[string]string{"koshi.io/policy": "custom-policy"},
+			Annotations: map[string]string{"runtime.getkoshi.ai/policy": "custom-policy"},
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},

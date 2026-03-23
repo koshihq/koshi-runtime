@@ -14,7 +14,7 @@ helm install koshi deploy/helm/koshi/ \
   --set image.tag=latest
 
 # 2. Opt namespaces in — only labeled namespaces get the sidecar
-kubectl label namespace my-namespace koshi.io/inject=true
+kubectl label namespace my-namespace runtime.getkoshi.ai/inject=true
 
 # 3. Restart workloads to pick up the sidecar
 kubectl rollout restart deployment -n my-namespace
@@ -33,7 +33,7 @@ curl http://localhost:15080/metrics | grep koshi_listener
 | Component | Namespace | Purpose |
 |-----------|-----------|---------|
 | Injector Deployment | `koshi-system` | Mutating admission webhook — injects sidecar into labeled namespaces |
-| MutatingWebhookConfiguration | cluster-scoped | Intercepts pod CREATE in namespaces with `koshi.io/inject: "true"` |
+| MutatingWebhookConfiguration | cluster-scoped | Intercepts pod CREATE in namespaces with `runtime.getkoshi.ai/inject: "true"` |
 | ConfigMap | `koshi-system` | Runtime config (mode, upstreams, default policy) |
 | TLS Secret | `koshi-system` | Webhook serving certificate (self-signed by default) |
 | NetworkPolicy | `koshi-system` | Restricts injector ingress to apiserver, sidecar egress to upstreams |
@@ -208,15 +208,15 @@ Key Helm values:
 | `injector.enabled` | `true` | Deploy the admission webhook |
 | `webhook.failurePolicy` | `Ignore` | Webhook down → pods still create without sidecar |
 | `sidecar.port` | `15080` | Sidecar listen port |
-| `namespaceSelector.matchLabels` | `koshi.io/inject: "true"` | Which namespaces get injection |
+| `namespaceSelector.matchLabels` | `runtime.getkoshi.ai/inject: "true"` | Which namespaces get injection |
 | `networkPolicy.enabled` | `true` | Deploy NetworkPolicy for injector |
 
 ### Annotations
 
 | Annotation | Values | Description |
 |------------|--------|-------------|
-| `koshi.io/inject` | `"false"` | Opt out a specific pod from injection |
-| `koshi.io/policy` | policy ID | Override the default policy for this pod's sidecar |
+| `runtime.getkoshi.ai/inject` | `"false"` | Opt out a specific pod from injection |
+| `runtime.getkoshi.ai/policy` | policy ID | Override the default policy for this pod's sidecar |
 
 ## Health Endpoints
 
@@ -253,7 +253,7 @@ The binary, image, and Helm chart are unchanged. Only the config changes.
 helm uninstall koshi -n koshi-system
 
 # Remove namespace label (stops new pods from getting sidecars)
-kubectl label namespace my-namespace koshi.io/inject-
+kubectl label namespace my-namespace runtime.getkoshi.ai/inject-
 
 # Restart workloads to remove existing sidecars
 kubectl rollout restart deployment -n my-namespace

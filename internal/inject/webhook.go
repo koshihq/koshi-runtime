@@ -42,7 +42,7 @@ func HandleMutate(cfg WebhookConfig, body []byte) (*admissionv1.AdmissionRespons
 	}
 
 	// Check opt-out annotation.
-	if pod.Annotations["koshi.io/inject"] == "false" {
+	if pod.Annotations["runtime.getkoshi.ai/inject"] == "false" {
 		return &admissionv1.AdmissionResponse{
 			UID:     req.UID,
 			Allowed: true,
@@ -116,7 +116,7 @@ func buildPatches(cfg WebhookConfig, pod *corev1.Pod, namespace string) []JSONPa
 	}
 
 	// Add policy override if annotated.
-	if policyOverride, ok := pod.Annotations["koshi.io/policy"]; ok && policyOverride != "" {
+	if policyOverride, ok := pod.Annotations["runtime.getkoshi.ai/policy"]; ok && policyOverride != "" {
 		sidecar.Env = append(sidecar.Env, corev1.EnvVar{
 			Name:  "KOSHI_POLICY_OVERRIDE",
 			Value: policyOverride,

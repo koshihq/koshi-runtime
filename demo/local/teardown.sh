@@ -10,7 +10,7 @@ kubectl delete -f "$(dirname "$0")/workload.yaml" --ignore-not-found 2>/dev/null
 kubectl delete -f "$(dirname "$0")/mock-upstream.yaml" --ignore-not-found 2>/dev/null || true
 
 # Remove namespace label.
-kubectl label namespace default koshi.io/inject- 2>/dev/null || true
+kubectl label namespace default runtime.getkoshi.ai/inject- 2>/dev/null || true
 
 # Uninstall Helm release.
 helm uninstall koshi -n koshi-system 2>/dev/null || true

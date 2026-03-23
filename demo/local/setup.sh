@@ -40,7 +40,7 @@ kubectl wait --for=condition=available deploy/mock-upstream -n default --timeout
 # 5. Label namespace and deploy workload.
 echo ""
 echo "Labeling default namespace for injection..."
-kubectl label namespace default koshi.io/inject=true --overwrite
+kubectl label namespace default runtime.getkoshi.ai/inject=true --overwrite
 
 echo "Deploying demo workload..."
 kubectl apply -f "$SCRIPT_DIR/workload.yaml"

@@ -49,7 +49,7 @@ kubectl apply -f mock-upstream.yaml
 ### 4. Label the namespace and deploy a workload
 
 ```bash
-kubectl label namespace default koshi.io/inject=true
+kubectl label namespace default runtime.getkoshi.ai/inject=true
 kubectl apply -f workload.yaml
 ```
 

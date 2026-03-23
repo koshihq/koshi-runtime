@@ -8,10 +8,10 @@ metadata:
   {{- if not .Values.webhook.caBundle }}
   annotations:
     # caBundle is patched by the cert-gen job.
-    koshi.io/cert-gen: "true"
+    runtime.getkoshi.ai/cert-gen: "true"
   {{- end }}
 webhooks:
-  - name: inject.koshi.io
+  - name: inject.runtime.getkoshi.ai
     admissionReviewVersions: ["v1"]
     sideEffects: None
     failurePolicy: {{ .Values.webhook.failurePolicy }}

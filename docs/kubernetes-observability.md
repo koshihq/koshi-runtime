@@ -5,7 +5,7 @@ This guide covers how to observe AI workload traffic through Koshi Runtime's lis
 ## Prerequisites
 
 - Koshi installed via Helm in listener mode (default)
-- At least one namespace labeled `koshi.io/inject: "true"`
+- At least one namespace labeled `runtime.getkoshi.ai/inject: "true"`
 - Workloads restarted to pick up the sidecar
 
 ## Structured Events

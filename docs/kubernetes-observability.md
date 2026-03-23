@@ -56,11 +56,11 @@ Shadow decision events include these stable fields:
 
 | Code | Shadow Decision | Meaning |
 |------|----------------|---------|
-| `identity_missing` | `would_reject` | Could not resolve workload identity from pod env vars |
-| `policy_not_found` | `would_reject` | No policy matches the resolved identity |
-| `guard_max_tokens` | `would_throttle` | Request `max_tokens` exceeds per-request guard |
-| `budget_exhausted_throttle` | `would_throttle` | Rolling window budget exhausted → would throttle |
-| `budget_exhausted_kill` | `would_kill` | Rolling window budget exhausted → would kill workload |
+| `identity_missing` | `would_reject` | Could not resolve workload identity and no default policy fallback available |
+| `policy_not_found` | `would_reject` | Identity resolved but no explicit or default policy available for evaluation |
+| `guard_max_tokens` | `would_throttle` | Request `max_tokens` exceeds the resolved policy's per-request guard |
+| `budget_exhausted_throttle` | `would_throttle` | Resolved policy's rolling window budget exceeded → would throttle |
+| `budget_exhausted_kill` | `would_kill` | Resolved policy's rolling window budget exceeded → would kill workload |
 | (empty) | `allow` | Request passed all checks |
 
 ## Prometheus Metrics
@@ -211,7 +211,25 @@ Unit: seconds
 {namespace="my-namespace", container="koshi-listener"} | json | stream="event" | reason_code=~"budget_exhausted.*"
 ```
 
+## Listener Accounting Scope
+
+Listener mode uses a policy-scoped in-memory accounting key per sidecar instance, not a per-workload tracker key. Shadow counters and `would_throttle` / `would_kill` decisions reflect pressure against the configured listener policy within that sidecar process.
+
+This does not mean all pods in a namespace or cluster share one live budget bucket. Koshi v1 has no cross-replica coordination. Each sidecar maintains its own independent accounting state.
+
+Use listener mode to validate policy shape, guard pressure, and local runtime overhead. Do not interpret it as fleet-wide enforcement simulation.
+
 ## Interpreting Results Before Enabling Enforcement
+
+### Interpreting Shadow Decisions
+
+Shadow outcomes are meaningful only relative to the policy Koshi is evaluating. The recommended starting configuration uses a `default_policy`, which means most traffic will emit `allow`, `would_throttle`, or `would_kill` depending on policy pressure.
+
+A `would_reject` event means Koshi could not find a usable policy context for the request — not merely that the runtime is in listener mode. If you see unexpected `would_reject` events, check that identity env vars are being injected and that a `default_policy` or explicit workload-to-policy mapping is configured.
+
+Listener mode without explicit workloads is valid only when a `default_policy` is configured. Without either, config validation fails and the runtime does not start.
+
+### Pre-Enforcement Checklist
 
 Before switching from listener to enforcement mode, verify:
 

@@ -170,17 +170,29 @@ All decisions and error responses include a stable `reason_code`:
 
 | Code | Meaning |
 |------|---------|
-| `identity_missing` | Could not resolve workload identity |
-| `policy_not_found` | No policy matches the workload |
-| `guard_max_tokens` | Per-request `max_tokens` exceeds guard |
-| `budget_exhausted_throttle` | Rolling window budget exceeded → throttle |
-| `budget_exhausted_kill` | Rolling window budget exceeded → kill |
+| `identity_missing` | Could not resolve workload identity and no default policy fallback available |
+| `policy_not_found` | Identity resolved but no explicit or default policy available for evaluation |
+| `guard_max_tokens` | Request `max_tokens` exceeds the resolved policy's per-request guard |
+| `budget_exhausted_throttle` | Resolved policy's rolling window budget exceeded → throttle |
+| `budget_exhausted_kill` | Resolved policy's rolling window budget exceeded → kill |
 | `upstream_not_configured` | No upstream URL for detected provider |
 | `upstream_timeout` | Upstream did not respond in time |
 | `system_degraded` | Runtime entered degraded mode |
 | `budget_config_error` | Budget tracker misconfiguration |
 
 See [`docs/kubernetes-observability.md`](docs/kubernetes-observability.md) for detailed observability guidance including sample Prometheus queries and event field reference.
+
+### How Shadow Decisions Relate to Policy
+
+Shadow decisions are computed against the policy context available to the sidecar at request time. If listener mode is started with a `default_policy`, requests are evaluated against that policy even when no explicit workload-to-policy mappings are defined. In that case, expect `allow`, `would_throttle`, or `would_kill` outcomes — not `would_reject`. A `would_reject` shadow decision only appears when Koshi cannot resolve a usable policy context for the request.
+
+| Situation | Policy context | Expected shadow outcomes |
+|---|---|---|
+| Listener with `default_policy` only | `default_policy` | `allow`, `would_throttle`, `would_kill` |
+| Listener with explicit workload-to-policy mapping | matched policy | `allow`, `would_throttle`, `would_kill` |
+| Listener with policy override annotation | override policy | `allow`, `would_throttle`, `would_kill` |
+| Identity missing, no default policy | none | `would_reject` (`identity_missing`) |
+| Identity resolved, no matching or default policy | none | `would_reject` (`policy_not_found`) |
 
 ## Deployment
 
@@ -299,4 +311,4 @@ make docker       # Build Docker image
 - **In-memory budget state.** Each sidecar maintains its own budget. State is lost on restart.
 - **No cross-replica coordination.** Budget enforcement is per-replica.
 - **Single policy per workload.** Only the first `policy_ref` is used.
-- **Listener mode accounting is aggregate.** All pods sharing the same sidecar config share one budget accounting bucket (by design — listener measures aggregate policy pressure, not per-workload isolation).
+- **Listener mode accounting is policy-scoped per sidecar.** Shadow accounting uses a shared policy key (`_default` or `listener_policy/<id>`) rather than a per-workload tracker key. This keeps accounting bounded, but does not provide cross-replica or cluster-wide budget simulation. Listener events still include namespace, workload kind, and workload name for observability; only the in-memory accounting key is policy-scoped.

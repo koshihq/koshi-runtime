@@ -15,7 +15,9 @@ upstreams:
   openai: "https://api.openai.com"
   anthropic: "https://api.anthropic.com"
 
-# Listener mode typically uses a single default policy for all observed traffic.
+# Listener mode starts with a single default_policy for all observed traffic.
+# Shadow decisions are computed against this policy — without it (or explicit
+# workload policies), listener mode will not start.
 # No workload definitions are needed — identity is derived from pod metadata
 # injected by the Koshi webhook.
 

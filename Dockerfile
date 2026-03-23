@@ -6,7 +6,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /koshi ./cmd/koshi
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X github.com/koshihq/koshi-runtime/internal/version.Version=${VERSION}" -o /koshi ./cmd/koshi
 
 FROM gcr.io/distroless/static-debian12:nonroot
 

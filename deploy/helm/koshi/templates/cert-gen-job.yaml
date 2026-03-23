@@ -22,7 +22,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: cert-gen
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/koshi"]
           args:

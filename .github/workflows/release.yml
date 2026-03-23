@@ -1,0 +1,171 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (skip publish steps)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: make test-race
+
+      - name: Lint
+        run: make lint
+
+      - name: Validate GenOps spec
+        run: make check-genops-spec
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint Helm chart
+        run: helm lint deploy/helm/koshi
+
+      - name: Template Helm chart
+        run: helm template deploy/helm/koshi
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive versions
+        id: versions
+        run: |
+          RAW_TAG="${GITHUB_REF_NAME}"
+          SEMVER="${RAW_TAG#v}"
+          echo "RAW_TAG=${RAW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "SEMVER=${SEMVER}" >> "$GITHUB_OUTPUT"
+          echo "Raw tag: ${RAW_TAG}"
+          echo "Semver:  ${SEMVER}"
+
+      # --- Multi-arch image build and push ---
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker metadata (GHCR)
+        id: meta-ghcr
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/koshihq/koshi-runtime
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Docker metadata (Docker Hub)
+        id: meta-dockerhub
+        uses: docker/metadata-action@v5
+        with:
+          images: docker.io/koshihq/koshi-runtime
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ inputs.dry_run != 'true' }}
+          tags: |
+            ${{ steps.meta-ghcr.outputs.tags }}
+            ${{ steps.meta-dockerhub.outputs.tags }}
+          labels: ${{ steps.meta-ghcr.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.versions.outputs.RAW_TAG }}
+
+      # --- Helm chart package and push ---
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Login to GHCR (Helm OCI)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Package Helm chart
+        run: |
+          helm package deploy/helm/koshi \
+            --version ${{ steps.versions.outputs.SEMVER }} \
+            --app-version ${{ steps.versions.outputs.RAW_TAG }}
+
+      - name: Push Helm chart to GHCR
+        if: ${{ inputs.dry_run != 'true' }}
+        run: helm push koshi-${{ steps.versions.outputs.SEMVER }}.tgz oci://ghcr.io/koshihq/charts
+
+      # --- GitHub Release ---
+
+      - name: Generate release notes
+        run: |
+          RAW_TAG="${{ steps.versions.outputs.RAW_TAG }}"
+          SEMVER="${{ steps.versions.outputs.SEMVER }}"
+          cat > /tmp/release-notes.md <<NOTES
+          ## Install
+
+          **Image (GHCR — canonical):**
+          \`ghcr.io/koshihq/koshi-runtime:${RAW_TAG}\`
+
+          **Image (Docker Hub — mirror):**
+          \`docker.io/koshihq/koshi-runtime:${RAW_TAG}\`
+
+          **Helm chart (OCI):**
+          \`\`\`bash
+          helm install koshi oci://ghcr.io/koshihq/charts/koshi \\
+            --version ${SEMVER} \\
+            --namespace koshi-system --create-namespace
+          \`\`\`
+
+          **Helm chart (packaged):**
+          Download \`koshi-${SEMVER}.tgz\` from this release's assets.
+
+          ### Validate
+
+          See [local demo walkthrough](https://github.com/koshihq/koshi-runtime/tree/main/demo/local) for a kind-based validation flow.
+          NOTES
+
+      - name: Create GitHub Release
+        if: ${{ inputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ steps.versions.outputs.RAW_TAG }} \
+            --title "Koshi Runtime ${{ steps.versions.outputs.RAW_TAG }}" \
+            --notes-file /tmp/release-notes.md \
+            koshi-${{ steps.versions.outputs.SEMVER }}.tgz

@@ -1,4 +1,4 @@
-.PHONY: build test test-race cover lint docker clean check-genops-spec validate-spec-version
+.PHONY: build test test-race cover lint docker docker-multiarch clean check-genops-spec validate-spec-version
 
 BINARY := koshi
 CMD := ./cmd/koshi
@@ -21,6 +21,9 @@ lint:
 
 docker:
 	docker build -t $(BINARY):latest .
+
+docker-multiarch:
+	docker buildx build --platform linux/amd64,linux/arm64 -t $(BINARY):latest .
 
 check-genops-spec:
 	go test -run TestGenOpsSpec ./internal/genops/

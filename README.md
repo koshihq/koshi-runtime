@@ -8,10 +8,9 @@ Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys a
 
 ```bash
 # 1. Install into koshi-system
-helm install koshi deploy/helm/koshi/ \
-  --namespace koshi-system --create-namespace \
-  --set image.repository=your-registry/koshi \
-  --set image.tag=latest
+helm install koshi oci://ghcr.io/koshihq/charts/koshi \
+  --version 1.0.0 \
+  --namespace koshi-system --create-namespace
 
 # 2. Opt namespaces in — only labeled namespaces get the sidecar
 kubectl label namespace my-namespace runtime.getkoshi.ai/inject=true
@@ -206,11 +205,12 @@ make docker
 ### Kubernetes (Helm)
 
 ```bash
-helm install koshi deploy/helm/koshi/ \
-  --namespace koshi-system --create-namespace \
-  --set image.repository=your-registry/koshi \
-  --set image.tag=latest
+helm install koshi oci://ghcr.io/koshihq/charts/koshi \
+  --version 1.0.0 \
+  --namespace koshi-system --create-namespace
 ```
+
+> **Docker Hub mirror:** If you prefer Docker Hub, add `--set image.repository=docker.io/koshihq/koshi-runtime`. The chart and configuration are identical.
 
 Key Helm values:
 

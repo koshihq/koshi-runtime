@@ -5,8 +5,8 @@ mode: listener
 replicaCount: 1
 
 image:
-  repository: koshi
-  tag: latest
+  repository: ghcr.io/koshihq/koshi-runtime
+  tag: ""  # Defaults to chart appVersion if empty
   pullPolicy: IfNotPresent
 
 service:

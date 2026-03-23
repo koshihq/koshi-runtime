@@ -100,6 +100,32 @@ curl -s http://localhost:15080/status | jq .
 - **`koshi_listener_decisions_total`** — Prometheus counter with namespace and shadow decision labels
 - **No 403/429/503 responses** — listener mode never blocks traffic
 
+## Using Released Artifacts
+
+Instead of building locally, you can use the published image and chart:
+
+```bash
+kind create cluster --name koshi-demo
+
+# Install from OCI chart with GHCR image (chart version = X.Y.Z, image tag = vX.Y.Z)
+helm install koshi oci://ghcr.io/koshihq/charts/koshi \
+  --version 1.0.0 \
+  --namespace koshi-system --create-namespace \
+  -f values-released.yaml
+
+# Then follow steps 3–8 above
+```
+
+Create a `values-released.yaml` that overrides the mock upstream URL but uses the default published image:
+
+```yaml
+mode: listener
+config:
+  upstreams:
+    openai: http://mock-upstream.default.svc.cluster.local:8080
+    anthropic: http://mock-upstream.default.svc.cluster.local:8080
+```
+
 ## Cleanup
 
 ```bash

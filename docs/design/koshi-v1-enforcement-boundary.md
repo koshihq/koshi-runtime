@@ -13,26 +13,26 @@ Koshi Runtime enforces policy at the workload boundary, executing deterministica
 ```
 ┌──────────────────────────────────────────────┐
 │                SLA Boundary                  │
-│   (Business KPI / Spend Objective / SLO)    │
-│   Conceptual in v1                          │
+│   (Business KPI / Spend Objective / SLO)     │
+│   Conceptual in v1                           │
 └──────────────────────────────────────────────┘
                      │
                      ▼
 ┌──────────────────────────────────────────────┐
-│             Workload Boundary               │
-│   (Identity-resolved runtime execution)     │
+│             Workload Boundary                │
+│   (Identity-resolved runtime execution)      │
 │                                              │
-│   ← Policy attaches here                    │
-│   ← Budget defined here                     │
+│   ← Policy attaches here                     │
+│   ← Budget defined here                      │
 └──────────────────────────────────────────────┘
                      │
                      ▼
 ┌──────────────────────────────────────────────┐
-│              Replica Boundary               │
-│   (Pod instance + Koshi sidecar)            │
+│              Replica Boundary                │
+│   (Pod instance + Koshi sidecar)             │
 │                                              │
-│   ← Enforcement executes here               │
-│   ← Reservation mutates state here          │
+│   ← Enforcement executes here                │
+│   ← Reservation mutates state here           │
 └──────────────────────────────────────────────┘
 ```
 

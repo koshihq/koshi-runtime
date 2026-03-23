@@ -36,6 +36,8 @@ type LogEmitter struct {
 }
 
 // NewLogEmitter creates a new LogEmitter that writes to the given logger.
+// The logger should have a "stream" attribute set to "event" to distinguish
+// structured events from runtime logs.
 func NewLogEmitter(logger *slog.Logger) *LogEmitter {
 	e := &LogEmitter{
 		events: make(chan Event, defaultBufferSize),

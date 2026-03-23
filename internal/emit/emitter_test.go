@@ -115,6 +115,26 @@ func TestLogEmitter_GracefulDrain(t *testing.T) {
 	}
 }
 
+func TestLogEmitter_StreamAttribute(t *testing.T) {
+	var buf bytes.Buffer
+	// Create an event logger with "stream":"event" — same as main.go will do.
+	eventLogger := slog.New(slog.NewJSONHandler(&buf, nil)).With("stream", "event")
+	e := NewLogEmitter(eventLogger)
+
+	e.Emit(context.Background(), Event{
+		Type:       "test_event",
+		WorkloadID: "svc-a",
+		Severity:   "info",
+	})
+
+	e.Close()
+
+	output := buf.String()
+	if !strings.Contains(output, `"stream":"event"`) {
+		t.Errorf("expected stream:event in output, got: %s", output)
+	}
+}
+
 func TestLogEmitter_SeverityLevels(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))

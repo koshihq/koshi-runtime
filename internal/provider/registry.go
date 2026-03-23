@@ -30,6 +30,20 @@ type Parser interface {
 	ParseUsage(body []byte) (*UsageData, error)
 }
 
+// Name returns the string name for a provider type.
+func Name(pt Type) string {
+	switch pt {
+	case OpenAI:
+		return "openai"
+	case Anthropic:
+		return "anthropic"
+	case Google:
+		return "google"
+	default:
+		return "unknown"
+	}
+}
+
 // DetectProvider determines the provider type from the request host.
 func DetectProvider(host string) Type {
 	h := strings.ToLower(host)

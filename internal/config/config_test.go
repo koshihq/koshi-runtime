@@ -426,6 +426,222 @@ policies: []
 	}
 }
 
+// --- Mode tests ---
+
+func TestValidate_ModeDefaultsToEnforcement(t *testing.T) {
+	path := writeTemp(t, validConfig)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Mode.Type != "enforcement" {
+		t.Errorf("expected mode enforcement, got %q", cfg.Mode.Type)
+	}
+}
+
+func TestValidate_ModeExplicitEnforcement(t *testing.T) {
+	path := writeTemp(t, `
+mode:
+  type: "enforcement"
+`+validConfig[1:]) // prepend mode to validConfig (skip leading newline)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Mode.Type != "enforcement" {
+		t.Errorf("expected mode enforcement, got %q", cfg.Mode.Type)
+	}
+}
+
+func TestValidate_ModeListener(t *testing.T) {
+	path := writeTemp(t, `
+mode:
+  type: "listener"
+upstreams:
+  openai: "https://api.openai.com"
+default_policy:
+  id: "_listener_default"
+  budgets:
+    rolling_tokens:
+      window_seconds: 3600
+      limit_tokens: 1000000
+      burst_tokens: 0
+  guards:
+    max_tokens_per_request: 32768
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Mode.Type != "listener" {
+		t.Errorf("expected mode listener, got %q", cfg.Mode.Type)
+	}
+	if cfg.ListenAddr != ":15080" {
+		t.Errorf("expected listener default port :15080, got %q", cfg.ListenAddr)
+	}
+}
+
+func TestValidate_ModeListenerNoDefaultPolicy(t *testing.T) {
+	path := writeTemp(t, `
+mode:
+  type: "listener"
+upstreams:
+  openai: "https://api.openai.com"
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for listener mode without default_policy")
+	}
+	if !strings.Contains(err.Error(), "default_policy") {
+		t.Errorf("expected error about default_policy, got: %v", err)
+	}
+}
+
+func TestValidate_ModeInvalid(t *testing.T) {
+	path := writeTemp(t, `
+mode:
+  type: "passthrough"
+upstreams:
+  openai: "https://api.openai.com"
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid mode type")
+	}
+	if !strings.Contains(err.Error(), "mode.type") {
+		t.Errorf("expected error about mode.type, got: %v", err)
+	}
+}
+
+func TestValidate_ModeListenerCustomListenAddr(t *testing.T) {
+	path := writeTemp(t, `
+mode:
+  type: "listener"
+listen_addr: ":9090"
+upstreams:
+  openai: "https://api.openai.com"
+default_policy:
+  id: "_default"
+  budgets:
+    rolling_tokens:
+      window_seconds: 60
+      limit_tokens: 1000
+      burst_tokens: 0
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ListenAddr != ":9090" {
+		t.Errorf("expected custom listen addr :9090, got %q", cfg.ListenAddr)
+	}
+}
+
+// --- Pod identity mode tests ---
+
+func TestValidate_PodIdentityMode(t *testing.T) {
+	path := writeTemp(t, `
+upstreams:
+  openai: "https://api.openai.com"
+workloads:
+  - id: "svc-a"
+    identity:
+      mode: "pod"
+    policy_refs:
+      - "standard"
+policies:
+  - id: "standard"
+    budgets:
+      rolling_tokens:
+        window_seconds: 60
+        limit_tokens: 1000
+        burst_tokens: 0
+`)
+	_, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected pod identity mode to be accepted, got: %v", err)
+	}
+}
+
+func TestValidate_PodIdentityKeyNotRequired(t *testing.T) {
+	path := writeTemp(t, `
+upstreams:
+  openai: "https://api.openai.com"
+workloads:
+  - id: "svc-a"
+    identity:
+      mode: "pod"
+    policy_refs:
+      - "standard"
+policies:
+  - id: "standard"
+    budgets:
+      rolling_tokens:
+        window_seconds: 60
+        limit_tokens: 1000
+        burst_tokens: 0
+`)
+	_, err := Load(path)
+	if err != nil {
+		t.Fatalf("pod identity should not require key, got: %v", err)
+	}
+}
+
+func TestValidate_MixedHeaderAndPodIdentity(t *testing.T) {
+	path := writeTemp(t, `
+upstreams:
+  openai: "https://api.openai.com"
+workloads:
+  - id: "svc-a"
+    identity:
+      mode: "header"
+      key: "x-genops-workload-id"
+    policy_refs:
+      - "standard"
+  - id: "svc-b"
+    identity:
+      mode: "pod"
+    policy_refs:
+      - "standard"
+policies:
+  - id: "standard"
+    budgets:
+      rolling_tokens:
+        window_seconds: 60
+        limit_tokens: 1000
+        burst_tokens: 0
+`)
+	_, err := Load(path)
+	if err != nil {
+		t.Fatalf("mixed header and pod identity should be valid, got: %v", err)
+	}
+}
+
+func TestValidate_HeaderModeEmptyKey(t *testing.T) {
+	path := writeTemp(t, `
+upstreams:
+  openai: "https://api.openai.com"
+workloads:
+  - id: "svc-a"
+    identity:
+      mode: "header"
+      key: ""
+    policy_refs:
+      - "standard"
+policies:
+  - id: "standard"
+    budgets:
+      rolling_tokens:
+        window_seconds: 60
+        limit_tokens: 1000
+        burst_tokens: 0
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for header mode with empty key")
+	}
+}
+
 func TestSSEExtractionEnabled_Default(t *testing.T) {
 	cfg := &Config{}
 	if !cfg.SSEExtractionEnabled() {

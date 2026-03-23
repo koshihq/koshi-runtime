@@ -200,3 +200,55 @@ func TestCheckPerRequestGuard_GuardNotConfigured(t *testing.T) {
 		t.Errorf("expected nil when guard not configured, got %+v", dec)
 	}
 }
+
+// --- ReasonCode tests ---
+
+func TestDecider_ReasonCode_Throttle(t *testing.T) {
+	d := NewTierDecider()
+	bs := budget.BudgetStatus{
+		WindowTokensUsed:  15000,
+		WindowTokensLimit: 10000,
+		BurstRemaining:    0,
+	}
+	dec := d.Evaluate(makePolicy(300, false), bs, nil)
+	if dec.ReasonCode != ReasonBudgetExhaustedThrottle {
+		t.Errorf("expected reason_code %q, got %q", ReasonBudgetExhaustedThrottle, dec.ReasonCode)
+	}
+}
+
+func TestDecider_ReasonCode_Kill(t *testing.T) {
+	d := NewTierDecider()
+	bs := budget.BudgetStatus{
+		WindowTokensUsed:  15000,
+		WindowTokensLimit: 10000,
+		BurstRemaining:    0,
+	}
+	dec := d.Evaluate(makePolicy(300, true), bs, nil)
+	if dec.ReasonCode != ReasonBudgetExhaustedKill {
+		t.Errorf("expected reason_code %q, got %q", ReasonBudgetExhaustedKill, dec.ReasonCode)
+	}
+}
+
+func TestDecider_ReasonCode_Allow_Empty(t *testing.T) {
+	d := NewTierDecider()
+	bs := budget.BudgetStatus{
+		WindowTokensUsed:  5000,
+		WindowTokensLimit: 10000,
+		BurstRemaining:    1000,
+	}
+	dec := d.Evaluate(makePolicy(300, false), bs, nil)
+	if dec.ReasonCode != "" {
+		t.Errorf("expected empty reason_code for Allow, got %q", dec.ReasonCode)
+	}
+}
+
+func TestCheckPerRequestGuard_ReasonCode(t *testing.T) {
+	p := makePolicy(300, false)
+	dec := CheckPerRequestGuard(p, 5000)
+	if dec == nil {
+		t.Fatal("expected decision for exceeding guard")
+	}
+	if dec.ReasonCode != ReasonGuardMaxTokens {
+		t.Errorf("expected reason_code %q, got %q", ReasonGuardMaxTokens, dec.ReasonCode)
+	}
+}

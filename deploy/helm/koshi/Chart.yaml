@@ -1,6 +1,6 @@
 apiVersion: v2
 name: koshi
-description: Deterministic AI workload enforcement sidecar
+description: Listener-first AI workload governance runtime for Kubernetes
 type: application
-version: 0.1.0
-appVersion: "1.0.0"
+version: 0.2.0
+appVersion: "1.1.0"

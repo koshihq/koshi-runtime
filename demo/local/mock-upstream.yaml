@@ -1,0 +1,113 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mock-upstream-config
+  namespace: default
+data:
+  server.py: |
+    import http.server
+    import json
+    import sys
+
+    class MockHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length > 0 else b""
+
+            # Parse max_tokens from request if present.
+            max_tokens = 100
+            try:
+                req = json.loads(body)
+                max_tokens = req.get("max_tokens", 100)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
+
+            # Simulate token usage: prompt=10, completion=min(max_tokens, 50).
+            completion_tokens = min(max_tokens, 50)
+            response = {
+                "id": "chatcmpl-mock-001",
+                "object": "chat.completion",
+                "model": "gpt-4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Hello from mock upstream!"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": 10 + completion_tokens,
+                },
+            }
+
+            payload = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"mock upstream healthy\n")
+
+        def log_message(self, format, *args):
+            sys.stderr.write(f"mock-upstream: {format % args}\n")
+
+    if __name__ == "__main__":
+        server = http.server.HTTPServer(("0.0.0.0", 8080), MockHandler)
+        print("Mock upstream listening on :8080", flush=True)
+        server.serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-upstream
+  namespace: default
+  labels:
+    app: mock-upstream
+  annotations:
+    koshi.io/inject: "false"  # Do not inject sidecar into the mock.
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-upstream
+  template:
+    metadata:
+      labels:
+        app: mock-upstream
+      annotations:
+        koshi.io/inject: "false"
+    spec:
+      containers:
+        - name: server
+          image: python:3.12-slim
+          command: ["python", "/config/server.py"]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: mock-upstream-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-upstream
+  namespace: default
+spec:
+  selector:
+    app: mock-upstream
+  ports:
+    - port: 8080
+      targetPort: 8080

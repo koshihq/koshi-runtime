@@ -25,7 +25,15 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})).With("stream", "runtime")
+
+	// Role dispatch: injector runs the admission webhook server.
+	if os.Getenv("KOSHI_ROLE") == "injector" {
+		runInjector(logger)
+		return
+	}
+
+	eventLogger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})).With("stream", "event")
 
 	// Load config.
 	configPath := os.Getenv("KOSHI_CONFIG_PATH")
@@ -39,19 +47,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("config loaded", "workloads", len(cfg.Workloads), "policies", len(cfg.Policies))
+	logger.Info("config loaded", "mode", cfg.Mode.Type, "workloads", len(cfg.Workloads), "policies", len(cfg.Policies))
 
-	// Wire dependencies.
-	// Use the first workload's identity key. Safe — config validation
-	// ensures all workloads share the same identity key (v1 constraint).
-	headerKey := "x-genops-workload-id"
-	if len(cfg.Workloads) > 0 && cfg.Workloads[0].Identity.Key != "" {
-		headerKey = cfg.Workloads[0].Identity.Key
-	}
-
-	resolver := identity.NewHeaderResolver(headerKey)
-	policyEngine := policy.NewMapEngine(cfg, logger)
-	emitter := emit.NewLogEmitter(logger)
+	// Wire dependencies based on mode.
+	emitter := emit.NewLogEmitter(eventLogger)
 	prometheus.MustRegister(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Namespace: "koshi",
@@ -61,42 +60,90 @@ func main() {
 		func() float64 { return float64(emitter.Dropped()) },
 	))
 
-	// Create budget tracker and register each workload with its resolved
-	// policy's budget params.
 	budgetTracker := budget.NewTracker()
-
-	for _, w := range cfg.Workloads {
-		pol, ok := policyEngine.Lookup(identity.WorkloadIdentity{WorkloadID: w.ID})
-		if !ok {
-			// This shouldn't happen — config validation ensures policy_refs are valid.
-			logger.Error("workload has no resolvable policy", "workload_id", w.ID)
-			os.Exit(1)
-		}
-		rt := pol.Budgets.RollingTokens
-		budgetTracker.Register(w.ID, budget.BudgetParams{
-			WindowSeconds: rt.WindowSeconds,
-			LimitTokens:   rt.LimitTokens,
-			BurstTokens:   rt.BurstTokens,
-		})
-	}
-
-	// Register _default workload if default_policy is configured.
-	// Why: proxy.go:131 hardcodes WorkloadID="_default" when identity resolution
-	// fails but default policy exists. That path calls Reserve("_default", ...),
-	// so the tracker must have "_default" registered with the default policy's
-	// budget params. If default_policy is nil, proxy returns 403 before reaching
-	// Reserve — no registration needed.
-	if cfg.DefaultPolicy != nil {
-		rt := cfg.DefaultPolicy.Budgets.RollingTokens
-		budgetTracker.Register("_default", budget.BudgetParams{
-			WindowSeconds: rt.WindowSeconds,
-			LimitTokens:   rt.LimitTokens,
-			BurstTokens:   rt.BurstTokens,
-		})
-	}
-
 	fanoutTracker := &fanout.NoOpTracker{}
 	decider := enforce.NewTierDecider()
+
+	var resolver identity.Resolver
+	var policyEngine policy.Engine
+	var listenerAccountingKey string
+
+	if cfg.Mode.Type == "listener" {
+		// Listener mode: use PodResolver (env vars set by webhook at admission).
+		resolver = identity.NewPodResolver()
+
+		// Check for policy override (annotation-driven).
+		policyOverride := os.Getenv("KOSHI_POLICY_OVERRIDE")
+		if policyOverride != "" {
+			// Look up the named policy and use OverrideEngine.
+			var overridePol *config.Policy
+			for i := range cfg.Policies {
+				if cfg.Policies[i].ID == policyOverride {
+					overridePol = &cfg.Policies[i]
+					break
+				}
+			}
+			if overridePol == nil {
+				logger.Error("KOSHI_POLICY_OVERRIDE references unknown policy", "policy_id", policyOverride)
+				os.Exit(1)
+			}
+			policyEngine = policy.NewOverrideEngine(overridePol)
+			listenerAccountingKey = "listener_policy/" + policyOverride
+			rt := overridePol.Budgets.RollingTokens
+			budgetTracker.Register(listenerAccountingKey, budget.BudgetParams{
+				WindowSeconds: rt.WindowSeconds,
+				LimitTokens:   rt.LimitTokens,
+				BurstTokens:   rt.BurstTokens,
+			})
+			logger.Info("listener: using policy override", "policy_id", policyOverride, "accounting_key", listenerAccountingKey)
+		} else {
+			// No override — use default policy with MapEngine.
+			policyEngine = policy.NewMapEngine(cfg, logger)
+			listenerAccountingKey = "_default"
+			if cfg.DefaultPolicy != nil {
+				rt := cfg.DefaultPolicy.Budgets.RollingTokens
+				budgetTracker.Register("_default", budget.BudgetParams{
+					WindowSeconds: rt.WindowSeconds,
+					LimitTokens:   rt.LimitTokens,
+					BurstTokens:   rt.BurstTokens,
+				})
+			}
+			logger.Info("listener: using default policy", "accounting_key", listenerAccountingKey)
+		}
+	} else {
+		// Enforcement mode: use HeaderResolver.
+		headerKey := "x-genops-workload-id"
+		if len(cfg.Workloads) > 0 && cfg.Workloads[0].Identity.Key != "" {
+			headerKey = cfg.Workloads[0].Identity.Key
+		}
+		resolver = identity.NewHeaderResolver(headerKey)
+		policyEngine = policy.NewMapEngine(cfg, logger)
+
+		// Register each workload with its resolved policy's budget params.
+		for _, w := range cfg.Workloads {
+			pol, ok := policyEngine.Lookup(identity.WorkloadIdentity{WorkloadID: w.ID})
+			if !ok {
+				logger.Error("workload has no resolvable policy", "workload_id", w.ID)
+				os.Exit(1)
+			}
+			rt := pol.Budgets.RollingTokens
+			budgetTracker.Register(w.ID, budget.BudgetParams{
+				WindowSeconds: rt.WindowSeconds,
+				LimitTokens:   rt.LimitTokens,
+				BurstTokens:   rt.BurstTokens,
+			})
+		}
+
+		// Register _default workload if default_policy is configured.
+		if cfg.DefaultPolicy != nil {
+			rt := cfg.DefaultPolicy.Budgets.RollingTokens
+			budgetTracker.Register("_default", budget.BudgetParams{
+				WindowSeconds: rt.WindowSeconds,
+				LimitTokens:   rt.LimitTokens,
+				BurstTokens:   rt.BurstTokens,
+			})
+		}
+	}
 
 	handler := proxy.NewHandler(proxy.HandlerConfig{
 		Resolver:              resolver,
@@ -111,6 +158,8 @@ func main() {
 		Logger:                logger,
 		Version:               version.Version,
 		GenOpsSpecVersion:     genops.SpecVersion,
+		Mode:                  cfg.Mode.Type,
+		ListenerAccountingKey: listenerAccountingKey,
 	})
 
 	// Build HTTP mux with health endpoints.

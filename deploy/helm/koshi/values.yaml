@@ -1,3 +1,7 @@
+# Default mode: listener (shadow evaluation, no blocking).
+# Set to "enforcement" to enable live policy enforcement.
+mode: listener
+
 replicaCount: 1
 
 image:
@@ -48,3 +52,51 @@ readinessProbe:
 pdb:
   enabled: true
   minAvailable: 1
+
+# --- Injector / Webhook ---
+
+injector:
+  enabled: true
+  replicaCount: 1
+  port: 8443
+  resources:
+    limits:
+      cpu: 200m
+      memory: 64Mi
+    requests:
+      cpu: 50m
+      memory: 32Mi
+
+webhook:
+  # Safe default: webhook failure does not block pod creation.
+  failurePolicy: Ignore
+  # Provide caBundle, certPEM, keyPEM to skip auto-generation.
+  # caBundle: ""
+  # certPEM: ""
+  # keyPEM: ""
+
+sidecar:
+  port: 15080
+  resources:
+    limits:
+      cpu: 200m
+      memory: 64Mi
+    requests:
+      cpu: 50m
+      memory: 32Mi
+
+# Namespace opt-in label for sidecar injection.
+namespaceSelector:
+  matchLabels:
+    koshi.io/inject: "true"
+
+networkPolicy:
+  enabled: true
+
+# Prometheus scrape annotations applied to injected workload pods.
+scrapeAnnotations:
+  enabled: true
+  keys:
+    scrape: "prometheus.io/scrape"
+    port: "prometheus.io/port"
+    path: "prometheus.io/path"

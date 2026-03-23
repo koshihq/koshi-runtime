@@ -4,9 +4,30 @@ metadata:
   name: {{ .Release.Name }}-koshi-config
 data:
   config.yaml: |
+    {{- if eq .Values.mode "listener" }}
+    mode:
+      type: "listener"
+
     upstreams:
       openai: "https://api.openai.com"
-      # anthropic: "https://api.anthropic.com"  # Uncomment to enable Anthropic provider
+      anthropic: "https://api.anthropic.com"
+
+    default_policy:
+      id: "_listener_default"
+      budgets:
+        rolling_tokens:
+          window_seconds: 3600
+          limit_tokens: 1000000
+          burst_tokens: 0
+      guards:
+        max_tokens_per_request: 32768
+      decision_tiers:
+        tier1_auto:
+          action: "throttle"
+    {{- else }}
+    upstreams:
+      openai: "https://api.openai.com"
+      # anthropic: "https://api.anthropic.com"
 
     workloads:
       - id: "example-agent"
@@ -36,3 +57,4 @@ data:
             action: "throttle"
           tier3_platform:
             action: "kill_workload"
+    {{- end }}

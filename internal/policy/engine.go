@@ -54,6 +54,23 @@ func NewMapEngine(cfg *config.Config, logger *slog.Logger) *MapEngine {
 	}
 }
 
+// OverrideEngine always returns a single policy regardless of workload identity.
+// Used in listener mode with KOSHI_POLICY_OVERRIDE to route all requests through
+// one named policy.
+type OverrideEngine struct {
+	policy *config.Policy
+}
+
+// NewOverrideEngine creates an engine that always returns the given policy.
+func NewOverrideEngine(pol *config.Policy) *OverrideEngine {
+	return &OverrideEngine{policy: pol}
+}
+
+// Lookup always returns the override policy.
+func (e *OverrideEngine) Lookup(_ identity.WorkloadIdentity) (*config.Policy, bool) {
+	return e.policy, true
+}
+
 // Lookup returns the policy for the given workload identity.
 // If the workload is unknown, it falls back to the default policy unless
 // strict mode is enabled.

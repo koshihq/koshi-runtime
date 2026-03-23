@@ -1,0 +1,75 @@
+{{- if .Values.injector.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-koshi-injector
+  labels:
+    app: koshi-injector
+spec:
+  replicas: {{ .Values.injector.replicaCount }}
+  selector:
+    matchLabels:
+      app: koshi-injector
+  template:
+    metadata:
+      labels:
+        app: koshi-injector
+    spec:
+      serviceAccountName: {{ .Release.Name }}-koshi-injector
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: injector
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: {{ .Values.injector.port }}
+              protocol: TCP
+          env:
+            - name: KOSHI_ROLE
+              value: "injector"
+            - name: KOSHI_TLS_CERT
+              value: /etc/koshi-tls/tls.crt
+            - name: KOSHI_TLS_KEY
+              value: /etc/koshi-tls/tls.key
+            - name: KOSHI_INJECT_IMAGE
+              value: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+            - name: KOSHI_SIDECAR_PORT
+              value: "{{ .Values.sidecar.port }}"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.injector.port }}
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.injector.port }}
+              scheme: HTTPS
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.injector.resources | nindent 12 }}
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/koshi-tls
+              readOnly: true
+            - name: config
+              mountPath: /etc/koshi
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Release.Name }}-koshi-webhook-tls
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-koshi-config
+{{- end }}

@@ -1,0 +1,41 @@
+# Helm values for the local demo.
+# Uses listener mode with the mock upstream.
+
+mode: listener
+
+image:
+  repository: koshi
+  tag: latest
+  pullPolicy: Never  # Image is loaded into kind directly.
+
+injector:
+  enabled: true
+  replicaCount: 1
+
+sidecar:
+  port: 15080
+  resources:
+    limits:
+      cpu: 200m
+      memory: 64Mi
+    requests:
+      cpu: 50m
+      memory: 32Mi
+
+# Override upstream to point at the in-cluster mock.
+config:
+  upstreams:
+    openai: "http://mock-upstream.default.svc.cluster.local:8080"
+    anthropic: "http://mock-upstream.default.svc.cluster.local:8080"
+  defaultPolicy:
+    id: "_listener_default"
+    budgets:
+      rollingTokens:
+        windowSeconds: 3600
+        limitTokens: 1000000
+        burstTokens: 0
+    guards:
+      maxTokensPerRequest: 32768
+    decisionTiers:
+      tier1Auto:
+        action: "throttle"

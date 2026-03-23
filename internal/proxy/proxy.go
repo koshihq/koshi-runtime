@@ -35,19 +35,21 @@ const DefaultResponseHeaderTimeout = 30 * time.Second
 
 // Handler implements the Koshi enforcement proxy.
 type Handler struct {
-	resolver           identity.Resolver
-	policyEngine       policy.Engine
-	budgetTracker      budget.Tracker
-	fanoutTracker      fanout.Tracker
-	decider            enforce.Decider
-	emitter            emit.Emitter
-	upstreams          map[string]string
-	sseExtraction      bool
-	degraded           atomic.Bool
-	logger             *slog.Logger
-	transport          *http.Transport
-	version            string
-	genopsSpecVersion  string
+	resolver              identity.Resolver
+	policyEngine          policy.Engine
+	budgetTracker         budget.Tracker
+	fanoutTracker         fanout.Tracker
+	decider               enforce.Decider
+	emitter               emit.Emitter
+	upstreams             map[string]string
+	sseExtraction         bool
+	degraded              atomic.Bool
+	logger                *slog.Logger
+	transport             *http.Transport
+	version               string
+	genopsSpecVersion     string
+	mode                  string // "listener" or "enforcement"
+	listenerAccountingKey string // budget tracker key for listener mode
 }
 
 // HandlerConfig holds configuration for creating a Handler.
@@ -64,6 +66,8 @@ type HandlerConfig struct {
 	Logger                 *slog.Logger
 	Version                string
 	GenOpsSpecVersion      string
+	Mode                   string // "listener" or "enforcement"; defaults to "enforcement"
+	ListenerAccountingKey  string // budget tracker key for listener mode
 }
 
 // NewHandler creates a new enforcement proxy handler.
@@ -78,18 +82,25 @@ func NewHandler(cfg HandlerConfig) *Handler {
 		specVer = genops.SpecVersion
 	}
 
+	mode := cfg.Mode
+	if mode == "" {
+		mode = "enforcement"
+	}
+
 	return &Handler{
-		resolver:          cfg.Resolver,
-		policyEngine:      cfg.PolicyEngine,
-		budgetTracker:     cfg.BudgetTracker,
-		fanoutTracker:     cfg.FanoutTracker,
-		decider:           cfg.Decider,
-		emitter:           cfg.Emitter,
-		upstreams:         cfg.Upstreams,
-		sseExtraction:     cfg.SSEExtraction,
-		logger:            cfg.Logger,
-		version:           cfg.Version,
-		genopsSpecVersion: specVer,
+		resolver:              cfg.Resolver,
+		policyEngine:          cfg.PolicyEngine,
+		budgetTracker:         cfg.BudgetTracker,
+		fanoutTracker:         cfg.FanoutTracker,
+		decider:               cfg.Decider,
+		emitter:               cfg.Emitter,
+		upstreams:             cfg.Upstreams,
+		sseExtraction:         cfg.SSEExtraction,
+		logger:                cfg.Logger,
+		version:               cfg.Version,
+		genopsSpecVersion:     specVer,
+		mode:                  mode,
+		listenerAccountingKey: cfg.ListenerAccountingKey,
 		transport: &http.Transport{
 			MaxIdleConns:           100,
 			MaxIdleConnsPerHost:    20,
@@ -98,6 +109,20 @@ func NewHandler(cfg HandlerConfig) *Handler {
 			ResponseHeaderTimeout:  rht,
 		},
 	}
+}
+
+// isListenerMode returns true if operating in listener (shadow) mode.
+func (h *Handler) isListenerMode() bool {
+	return h.mode == "listener"
+}
+
+// accountingKey returns the budget tracker key for the current request.
+// In listener mode, uses the policy-scoped key. In enforcement mode, uses the workload ID.
+func (h *Handler) accountingKey(workloadID string) string {
+	if h.isListenerMode() && h.listenerAccountingKey != "" {
+		return h.listenerAccountingKey
+	}
+	return workloadID
 }
 
 // IsDegraded returns whether the handler is in degraded pass-through mode.
@@ -136,7 +161,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			h.logger.Error("koshi: panic recovered, entering degraded mode", "panic", rec, "stack", string(stack))
 			// Try to serve a 500 response if headers haven't been sent.
-			writeErrorResponse(w, http.StatusInternalServerError, "service_degraded", "system", "internal_protection_triggered", "degraded")
+			writeErrorResponse(w, http.StatusInternalServerError, "service_degraded", "system", "internal_protection_triggered", "degraded", enforce.ReasonSystemDegraded)
 		}
 	}()
 
@@ -156,13 +181,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Step 2: Check for default policy fallback.
 		pol, ok := h.policyEngine.Lookup(identity.WorkloadIdentity{})
 		if !ok {
+			if h.isListenerMode() {
+				// Listener mode: emit shadow event, proxy directly.
+				h.emitEvent(r.Context(), shadowEvent(
+					identity.WorkloadIdentity{}, ShadowWouldReject,
+					enforce.ReasonIdentityMissing, "", "", 0, 0,
+				))
+				listenerDecisionsTotal.WithLabelValues("", ShadowWouldReject, enforce.ReasonIdentityMissing).Inc()
+				h.proxyDirect(w, r)
+				return
+			}
 			h.emitEvent(r.Context(), emit.Event{
 				Type:       "identity_rejected",
 				Severity:   "warn",
-				Attributes: map[string]any{"error": err.Error()},
+				Attributes: map[string]any{"error": err.Error(), "reason_code": enforce.ReasonIdentityMissing},
 			})
 			enforcementDecisionsTotal.WithLabelValues("deny", "none").Inc()
-			writeErrorResponse(w, http.StatusForbidden, "identity_required", "enforcement", "missing_workload_identity", "reject")
+			writeErrorResponse(w, http.StatusForbidden, "identity_required", "enforcement", "missing_workload_identity", "reject", enforce.ReasonIdentityMissing)
 			return
 		}
 		// Use default policy with empty identity.
@@ -173,14 +208,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 3: Lookup policy.
 	pol, ok := h.policyEngine.Lookup(ident)
 	if !ok {
+		if h.isListenerMode() {
+			// Listener mode: emit shadow event, proxy directly.
+			h.emitEvent(r.Context(), shadowEvent(
+				ident, ShadowWouldReject,
+				enforce.ReasonPolicyNotFound, "", "", 0, 0,
+			))
+			listenerDecisionsTotal.WithLabelValues(ident.Namespace, ShadowWouldReject, enforce.ReasonPolicyNotFound).Inc()
+			h.proxyDirect(w, r)
+			return
+		}
 		h.emitEvent(r.Context(), emit.Event{
 			Type:       "policy_rejected",
 			WorkloadID: ident.WorkloadID,
 			Severity:   "warn",
+			Attributes: map[string]any{"reason_code": enforce.ReasonPolicyNotFound},
 		})
 		requestsTotal.WithLabelValues(ident.WorkloadID, "none", "deny").Inc()
 		enforcementDecisionsTotal.WithLabelValues("deny", "none").Inc()
-		writeErrorResponse(w, http.StatusForbidden, "policy_not_found", "enforcement", "no_matching_policy", "reject")
+		writeErrorResponse(w, http.StatusForbidden, "policy_not_found", "enforcement", "no_matching_policy", "reject", enforce.ReasonPolicyNotFound)
 		return
 	}
 
@@ -209,29 +255,44 @@ func (h *Handler) handleWithPolicy(w http.ResponseWriter, r *http.Request, ident
 
 	enforcementStart := time.Now()
 
+	providerName := provider.Name(providerType)
+	acctKey := h.accountingKey(ident.WorkloadID)
+
 	// Step 5: Check per-request guard.
 	if guardDec := enforce.CheckPerRequestGuard(pol, maxTokens); guardDec != nil {
-		enforcementLatency.Observe(time.Since(enforcementStart).Seconds())
-		h.emitEvent(ctx, emit.Event{
-			Type:       "guard_rejected",
-			WorkloadID: ident.WorkloadID,
-			Severity:   "warn",
-			Attributes: map[string]any{"reason": guardDec.Reason},
-		})
-		requestsTotal.WithLabelValues(ident.WorkloadID, pol.ID, "deny").Inc()
-		enforcementDecisionsTotal.WithLabelValues("deny", pol.ID).Inc()
-		writeEnforcementResponse(w, *guardDec)
-		return
+		if h.isListenerMode() {
+			listenerLatency.Observe(time.Since(enforcementStart).Seconds())
+			h.emitEvent(ctx, shadowEvent(ident, ShadowWouldThrottle, guardDec.ReasonCode, providerName, "", maxTokens, 0))
+			listenerDecisionsTotal.WithLabelValues(ident.Namespace, ShadowWouldThrottle, guardDec.ReasonCode).Inc()
+			// Continue to proxy — do not return.
+		} else {
+			enforcementLatency.Observe(time.Since(enforcementStart).Seconds())
+			h.emitEvent(ctx, emit.Event{
+				Type:       "guard_rejected",
+				WorkloadID: ident.WorkloadID,
+				Severity:   "warn",
+				Attributes: map[string]any{"reason": guardDec.Reason, "reason_code": guardDec.ReasonCode},
+			})
+			requestsTotal.WithLabelValues(ident.WorkloadID, pol.ID, "deny").Inc()
+			enforcementDecisionsTotal.WithLabelValues("deny", pol.ID).Inc()
+			writeEnforcementResponse(w, *guardDec)
+			return
+		}
 	}
 
-	// Step 6: Reserve tokens.
-	budgetStatus, allowed, err := h.budgetTracker.Reserve(ctx, ident.WorkloadID, maxTokens)
+	// Step 6: Reserve tokens (using accounting key).
+	budgetStatus, allowed, err := h.budgetTracker.Reserve(ctx, acctKey, maxTokens)
 	if err != nil {
-		enforcementLatency.Observe(time.Since(enforcementStart).Seconds())
-		h.logger.Error("budget: unregistered workload", "workload_id", ident.WorkloadID, "error", err)
-		enforcementDecisionsTotal.WithLabelValues("error", "none").Inc()
-		writeErrorResponse(w, http.StatusInternalServerError, "budget_config_error", "system", "unregistered_workload", "error")
-		return
+		if h.isListenerMode() {
+			// Listener mode: log and continue to proxy without budget tracking.
+			h.logger.Warn("listener: budget reserve failed, continuing", "workload_id", ident.WorkloadID, "error", err)
+		} else {
+			enforcementLatency.Observe(time.Since(enforcementStart).Seconds())
+			h.logger.Error("budget: unregistered workload", "workload_id", ident.WorkloadID, "error", err)
+			enforcementDecisionsTotal.WithLabelValues("error", "none").Inc()
+			writeErrorResponse(w, http.StatusInternalServerError, "budget_config_error", "system", "unregistered_workload", "error", enforce.ReasonBudgetConfigError)
+			return
+		}
 	}
 
 	// Step 7: Fanout check (no-op in v1).
@@ -241,49 +302,69 @@ func (h *Handler) handleWithPolicy(w http.ResponseWriter, r *http.Request, ident
 	if !allowed || !fanoutAllowed {
 		decision := h.decider.Evaluate(pol, budgetStatus, &fanoutStatus)
 		if decision.Action != enforce.ActionAllow {
-			enforcementLatency.Observe(time.Since(enforcementStart).Seconds())
-			h.emitEvent(ctx, emit.Event{
-				Type:       "enforcement",
-				WorkloadID: ident.WorkloadID,
-				Severity:   "warn",
-				Attributes: map[string]any{
-					"action":          actionName(decision.Action),
-					"decision":        actionName(decision.Action),
-					"category":        "enforcement",
-					"tier":            strconv.Itoa(decision.Tier),
-					"reason":          decision.Reason,
-					"tokens_used":     budgetStatus.WindowTokensUsed,
-					"tokens_limit":    budgetStatus.WindowTokensLimit,
-					"burst_remaining": budgetStatus.BurstRemaining,
-					"reserved_tokens": maxTokens,
-				},
-			})
-			decision.TokensUsed = budgetStatus.WindowTokensUsed
-			decision.TokensLimit = budgetStatus.WindowTokensLimit
-			requestsTotal.WithLabelValues(ident.WorkloadID, pol.ID, "deny").Inc()
-			enforcementDecisionsTotal.WithLabelValues("deny", pol.ID).Inc()
-			writeEnforcementResponse(w, decision)
-			return
+			if h.isListenerMode() {
+				// Listener mode: emit shadow, continue to proxy.
+				shadowDec := ShadowWouldThrottle
+				if decision.Action == enforce.ActionKill {
+					shadowDec = ShadowWouldKill
+				}
+				listenerLatency.Observe(time.Since(enforcementStart).Seconds())
+				h.emitEvent(ctx, shadowEvent(ident, shadowDec, decision.ReasonCode, providerName, "", maxTokens, 0))
+				listenerDecisionsTotal.WithLabelValues(ident.Namespace, shadowDec, decision.ReasonCode).Inc()
+				// Fall through to proxy.
+			} else {
+				enforcementLatency.Observe(time.Since(enforcementStart).Seconds())
+				h.emitEvent(ctx, emit.Event{
+					Type:       "enforcement",
+					WorkloadID: ident.WorkloadID,
+					Severity:   "warn",
+					Attributes: map[string]any{
+						"action":          actionName(decision.Action),
+						"decision":        actionName(decision.Action),
+						"category":        "enforcement",
+						"tier":            strconv.Itoa(decision.Tier),
+						"reason":          decision.Reason,
+						"reason_code":     decision.ReasonCode,
+						"tokens_used":     budgetStatus.WindowTokensUsed,
+						"tokens_limit":    budgetStatus.WindowTokensLimit,
+						"burst_remaining": budgetStatus.BurstRemaining,
+						"reserved_tokens": maxTokens,
+					},
+				})
+				decision.TokensUsed = budgetStatus.WindowTokensUsed
+				decision.TokensLimit = budgetStatus.WindowTokensLimit
+				requestsTotal.WithLabelValues(ident.WorkloadID, pol.ID, "deny").Inc()
+				enforcementDecisionsTotal.WithLabelValues("deny", pol.ID).Inc()
+				writeEnforcementResponse(w, decision)
+				return
+			}
 		}
 	}
 
 	// Step 9: Proxy to upstream.
-	enforcementLatency.Observe(time.Since(enforcementStart).Seconds())
-	h.emitEvent(ctx, emit.Event{
-		Type:       "request_allowed",
-		WorkloadID: ident.WorkloadID,
-		Severity:   "info",
-		Attributes: map[string]any{
-			"estimated_tokens": strconv.FormatInt(maxTokens, 10),
-			"streaming":        strconv.FormatBool(streaming),
-			"phase":            "reservation",
-		},
-	})
-	requestsTotal.WithLabelValues(ident.WorkloadID, pol.ID, "allow").Inc()
-	tokensUsedTotal.WithLabelValues(ident.WorkloadID, pol.ID, "reservation").Add(float64(maxTokens))
-	enforcementDecisionsTotal.WithLabelValues("allow", pol.ID).Inc()
+	if h.isListenerMode() {
+		listenerLatency.Observe(time.Since(enforcementStart).Seconds())
+		h.emitEvent(ctx, shadowEvent(ident, ShadowAllow, "", providerName, "", maxTokens, 0))
+		listenerDecisionsTotal.WithLabelValues(ident.Namespace, ShadowAllow, "").Inc()
+		listenerTokensTotal.WithLabelValues(ident.Namespace, providerName, "reservation").Add(float64(maxTokens))
+	} else {
+		enforcementLatency.Observe(time.Since(enforcementStart).Seconds())
+		h.emitEvent(ctx, emit.Event{
+			Type:       "request_allowed",
+			WorkloadID: ident.WorkloadID,
+			Severity:   "info",
+			Attributes: map[string]any{
+				"estimated_tokens": strconv.FormatInt(maxTokens, 10),
+				"streaming":        strconv.FormatBool(streaming),
+				"phase":            "reservation",
+			},
+		})
+		requestsTotal.WithLabelValues(ident.WorkloadID, pol.ID, "allow").Inc()
+		tokensUsedTotal.WithLabelValues(ident.WorkloadID, pol.ID, "reservation").Add(float64(maxTokens))
+		enforcementDecisionsTotal.WithLabelValues("allow", pol.ID).Inc()
+	}
 
-	h.proxyWithEnforcement(w, r, ident, pol, providerType, maxTokens, streaming, bodyBytes)
+	h.proxyWithEnforcement(w, r, ident, pol, providerType, maxTokens, streaming, bodyBytes, acctKey)
 }
 
 func (h *Handler) proxyWithEnforcement(
@@ -295,10 +376,11 @@ func (h *Handler) proxyWithEnforcement(
 	reservedTokens int64,
 	streaming bool,
 	bodyBytes []byte,
+	acctKey string,
 ) {
 	upstreamURL := h.resolveUpstream(r)
 	if upstreamURL == nil {
-		writeErrorResponse(w, http.StatusBadGateway, "upstream_not_configured", "system", "no_upstream_for_provider", "reject")
+		writeErrorResponse(w, http.StatusBadGateway, "upstream_not_configured", "system", "no_upstream_for_provider", "reject", enforce.ReasonUpstreamNotConfigured)
 		return
 	}
 
@@ -327,7 +409,7 @@ func (h *Handler) proxyWithEnforcement(
 			// On upstream 5xx: return reservation to budget.
 			if resp.StatusCode >= 500 {
 				h.budgetTracker.Record(r.Context(), budget.UsageReport{
-					WorkloadID: ident.WorkloadID,
+					WorkloadID: acctKey,
 					Tokens:     -reservedTokens, // Return full reservation.
 					Timestamp:  time.Now(),
 				})
@@ -370,7 +452,7 @@ func (h *Handler) proxyWithEnforcement(
 						if usage != nil {
 							delta := usage.TotalTokens - reservedTokens
 							h.budgetTracker.Record(r.Context(), budget.UsageReport{
-								WorkloadID: ident.WorkloadID,
+								WorkloadID: acctKey,
 								Tokens:     delta,
 								Timestamp:  time.Now(),
 							})
@@ -396,7 +478,7 @@ func (h *Handler) proxyWithEnforcement(
 			}
 
 			// Non-streaming response: extract usage from body.
-			return h.handleNonStreamingResponse(r.Context(), resp, ident, pol.ID, providerType, reservedTokens)
+			return h.handleNonStreamingResponse(r.Context(), resp, ident, pol.ID, providerType, reservedTokens, acctKey)
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			h.emitEvent(r.Context(), emit.Event{
@@ -406,7 +488,7 @@ func (h *Handler) proxyWithEnforcement(
 				Attributes: map[string]any{"error": err.Error()},
 			})
 			// Reservation stands on timeout (conservative).
-			writeErrorResponse(w, http.StatusGatewayTimeout, "upstream_timeout", "system", "upstream_did_not_respond", "reject")
+			writeErrorResponse(w, http.StatusGatewayTimeout, "upstream_timeout", "system", "upstream_did_not_respond", "reject", enforce.ReasonUpstreamTimeout)
 		},
 	}
 
@@ -420,6 +502,7 @@ func (h *Handler) handleNonStreamingResponse(
 	policyID string,
 	providerType provider.Type,
 	reservedTokens int64,
+	acctKey string,
 ) error {
 	bodyBytes, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -445,7 +528,7 @@ func (h *Handler) handleNonStreamingResponse(
 	// Reconcile: delta = actual - reserved.
 	delta := usage.TotalTokens - reservedTokens
 	h.budgetTracker.Record(ctx, budget.UsageReport{
-		WorkloadID: ident.WorkloadID,
+		WorkloadID: acctKey,
 		Tokens:     delta,
 		Timestamp:  time.Now(),
 	})
@@ -472,7 +555,7 @@ func (h *Handler) handleNonStreamingResponse(
 func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request) {
 	upstreamURL := h.resolveUpstream(r)
 	if upstreamURL == nil {
-		writeErrorResponse(w, http.StatusBadGateway, "upstream_not_configured", "system", "no_upstream_for_provider", "reject")
+		writeErrorResponse(w, http.StatusBadGateway, "upstream_not_configured", "system", "no_upstream_for_provider", "reject", enforce.ReasonUpstreamNotConfigured)
 		return
 	}
 
@@ -525,14 +608,15 @@ func (h *Handler) resolveUpstream(r *http.Request) *url.URL {
 	return u
 }
 
-func writeErrorResponse(w http.ResponseWriter, statusCode int, errorCode, category, reason, decision string) {
+func writeErrorResponse(w http.ResponseWriter, statusCode int, errorCode, category, reason, decision, reasonCode string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-GenOps-Decision", decision)
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(map[string]any{
-		"error":    errorCode,
-		"category": category,
-		"reason":   reason,
+		"error":       errorCode,
+		"category":    category,
+		"reason":      reason,
+		"reason_code": reasonCode,
 	})
 }
 
@@ -549,6 +633,7 @@ func writeEnforcementResponse(w http.ResponseWriter, dec enforce.Decision) {
 			"error":        "rate_limited",
 			"category":     "enforcement",
 			"reason":       dec.Reason,
+			"reason_code":  dec.ReasonCode,
 			"tokens_used":  dec.TokensUsed,
 			"tokens_limit": dec.TokensLimit,
 		})
@@ -560,6 +645,7 @@ func writeEnforcementResponse(w http.ResponseWriter, dec enforce.Decision) {
 			"error":        "workload_killed",
 			"category":     "enforcement",
 			"reason":       dec.Reason,
+			"reason_code":  dec.ReasonCode,
 			"tokens_used":  dec.TokensUsed,
 			"tokens_limit": dec.TokensLimit,
 		})

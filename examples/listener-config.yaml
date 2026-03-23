@@ -1,0 +1,36 @@
+# Koshi Runtime - Listener Mode Configuration
+#
+# Listener mode runs the full enforcement pipeline in shadow: identity
+# resolution, policy lookup, guard evaluation, token estimation, and usage
+# reconciliation all execute, but no request is ever blocked (no 403/429/503).
+# Shadow outcomes (would_reject, would_throttle, would_kill) are emitted as
+# structured events for observability.
+#
+# This is the recommended starting configuration for Kubernetes adoption.
+
+mode:
+  type: "listener"
+
+upstreams:
+  openai: "https://api.openai.com"
+  anthropic: "https://api.anthropic.com"
+
+# Listener mode typically uses a single default policy for all observed traffic.
+# No workload definitions are needed — identity is derived from pod metadata
+# injected by the Koshi webhook.
+
+default_policy:
+  id: "_listener_default"
+  budgets:
+    rolling_tokens:
+      window_seconds: 3600
+      limit_tokens: 1000000
+      burst_tokens: 0
+  guards:
+    max_tokens_per_request: 32768
+  decision_tiers:
+    tier1_auto:
+      action: "throttle"
+
+# Listen on the sidecar port (default for listener mode).
+# listen_addr: ":15080"

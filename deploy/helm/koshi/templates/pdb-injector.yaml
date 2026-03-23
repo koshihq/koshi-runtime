@@ -1,0 +1,13 @@
+{{- if and .Values.injector.enabled .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-koshi-injector
+  labels:
+    app: koshi-injector
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: koshi-injector
+{{- end }}

@@ -1,0 +1,31 @@
+{{- if and .Values.injector.enabled .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-koshi-injector
+  labels:
+    app: koshi-injector
+spec:
+  podSelector:
+    matchLabels:
+      app: koshi-injector
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow webhook calls from the kube-apiserver.
+    - ports:
+        - port: {{ .Values.injector.port }}
+          protocol: TCP
+  egress:
+    # Allow DNS resolution.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow HTTPS to Kubernetes API (for cert-gen patching).
+    - ports:
+        - port: 443
+          protocol: TCP
+{{- end }}

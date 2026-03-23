@@ -70,6 +70,9 @@ type budgetSpy struct {
 	reserveCalls atomic.Int64
 	recordCalls  atomic.Int64
 	lastDelta    atomic.Int64
+	mu           sync.Mutex
+	reserveKeys  []string
+	recordKeys   []string
 }
 
 func newBudgetSpy(inner budget.Tracker) *budgetSpy {
@@ -78,12 +81,18 @@ func newBudgetSpy(inner budget.Tracker) *budgetSpy {
 
 func (s *budgetSpy) Reserve(ctx context.Context, wid string, tokens int64) (budget.BudgetStatus, bool, error) {
 	s.reserveCalls.Add(1)
+	s.mu.Lock()
+	s.reserveKeys = append(s.reserveKeys, wid)
+	s.mu.Unlock()
 	return s.inner.Reserve(ctx, wid, tokens)
 }
 
 func (s *budgetSpy) Record(ctx context.Context, report budget.UsageReport) {
 	s.recordCalls.Add(1)
 	s.lastDelta.Store(report.Tokens)
+	s.mu.Lock()
+	s.recordKeys = append(s.recordKeys, report.WorkloadID)
+	s.mu.Unlock()
 	s.inner.Record(ctx, report)
 }
 
@@ -153,6 +162,32 @@ func (s *spyEmitter) eventsByType(eventType string) []emit.Event {
 		}
 	}
 	return out
+}
+
+func makeListenerHandler(t *testing.T, upstreamURL string) (*Handler, *spyEmitter) {
+	t.Helper()
+	cfg := testConfig()
+	cfg.Upstreams["openai"] = upstreamURL
+
+	tracker := budget.NewTracker()
+	tracker.Register("_default", budget.BudgetParams{WindowSeconds: 60, LimitTokens: 10000, BurstTokens: 1000})
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	spy := &spyEmitter{}
+
+	h := NewHandler(HandlerConfig{
+		Resolver:              identity.NewHeaderResolver("x-genops-workload-id"),
+		PolicyEngine:          policy.NewMapEngine(cfg, logger),
+		BudgetTracker:         tracker,
+		FanoutTracker:         &fanout.NoOpTracker{},
+		Decider:               enforce.NewTierDecider(),
+		Emitter:               spy,
+		Upstreams:             cfg.Upstreams,
+		SSEExtraction:         false,
+		Logger:                logger,
+		Mode:                  "listener",
+		ListenerAccountingKey: "_default",
+	})
+	return h, spy
 }
 
 // ============================================================
@@ -2480,4 +2515,379 @@ func TestGracefulShutdown_InFlightCompletes(t *testing.T) {
 	if got := responseCode.Load(); got != http.StatusOK {
 		t.Errorf("expected in-flight request to complete with 200, got %d", got)
 	}
+}
+
+// ============================================================
+// Listener (Shadow) Mode Tests
+// ============================================================
+
+func TestListenerMode_IdentityFailure_ProxiesDirect(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	h, spy := makeListenerHandler(t, upstream.URL)
+
+	// No workload ID header → identity failure
+	req := httptest.NewRequest(http.MethodPost, "http://api.openai.com/v1/chat/completions",
+		strings.NewReader(`{"max_tokens":100}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	// Listener mode should proxy anyway (200), not 403.
+	if w.Code != http.StatusOK {
+		t.Errorf("listener mode should proxy on identity failure, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Should have emitted a shadow event.
+	events := spy.eventsByType("listener_shadow")
+	if len(events) == 0 {
+		t.Fatal("expected listener_shadow event on identity failure")
+	}
+	e := events[0]
+	if e.Attributes["decision_shadow"] != ShadowWouldReject {
+		t.Errorf("expected decision_shadow would_reject, got %v", e.Attributes["decision_shadow"])
+	}
+	if e.Attributes["reason_code"] != enforce.ReasonIdentityMissing {
+		t.Errorf("expected reason_code identity_missing, got %v", e.Attributes["reason_code"])
+	}
+	if e.Attributes["mode"] != "listener" {
+		t.Errorf("expected mode listener, got %v", e.Attributes["mode"])
+	}
+}
+
+func TestListenerMode_PolicyFailure_ProxiesDirect(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	// Use a handler with no default policy and no matching workload for "unknown-svc"
+	cfg := testConfig()
+	cfg.Upstreams["openai"] = upstream.URL
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	spy := &spyEmitter{}
+
+	tracker := budget.NewTracker()
+	tracker.Register("_default", budget.BudgetParams{WindowSeconds: 60, LimitTokens: 10000, BurstTokens: 1000})
+
+	h := NewHandler(HandlerConfig{
+		Resolver:              identity.NewHeaderResolver("x-genops-workload-id"),
+		PolicyEngine:          policy.NewMapEngine(cfg, logger), // No default policy
+		BudgetTracker:         tracker,
+		FanoutTracker:         &fanout.NoOpTracker{},
+		Decider:               enforce.NewTierDecider(),
+		Emitter:               spy,
+		Upstreams:             cfg.Upstreams,
+		Logger:                logger,
+		Mode:                  "listener",
+		ListenerAccountingKey: "_default",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://api.openai.com/v1/chat/completions",
+		strings.NewReader(`{"max_tokens":100}`))
+	req.Header.Set("x-genops-workload-id", "unknown-svc")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("listener mode should proxy on policy failure, got %d", w.Code)
+	}
+
+	events := spy.eventsByType("listener_shadow")
+	if len(events) == 0 {
+		t.Fatal("expected listener_shadow event on policy failure")
+	}
+	if events[0].Attributes["reason_code"] != enforce.ReasonPolicyNotFound {
+		t.Errorf("expected reason_code policy_not_found, got %v", events[0].Attributes["reason_code"])
+	}
+}
+
+func TestListenerMode_GuardExceeded_StillProxies(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"usage": map[string]int{"total_tokens": 30},
+		})
+	}))
+	defer upstream.Close()
+
+	h, spy := makeListenerHandler(t, upstream.URL)
+
+	// Send request with max_tokens exceeding the guard (4096)
+	body := `{"model":"gpt-4","max_tokens":10000}`
+	req := httptest.NewRequest(http.MethodPost, "http://api.openai.com/v1/chat/completions",
+		strings.NewReader(body))
+	req.Header.Set("x-genops-workload-id", "svc-a")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	// Listener mode: 200, not 429
+	if w.Code != http.StatusOK {
+		t.Errorf("listener mode should proxy when guard exceeded, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Should have a would_throttle shadow event
+	events := spy.eventsByType("listener_shadow")
+	found := false
+	for _, e := range events {
+		if e.Attributes["decision_shadow"] == ShadowWouldThrottle &&
+			e.Attributes["reason_code"] == enforce.ReasonGuardMaxTokens {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected would_throttle shadow event with reason guard_max_tokens")
+	}
+}
+
+func TestListenerMode_AllowedRequest_EmitsShadowAllow(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"usage": map[string]int{"total_tokens": 30},
+		})
+	}))
+	defer upstream.Close()
+
+	h, spy := makeListenerHandler(t, upstream.URL)
+
+	body := `{"model":"gpt-4","max_tokens":100}`
+	req := httptest.NewRequest(http.MethodPost, "http://api.openai.com/v1/chat/completions",
+		strings.NewReader(body))
+	req.Header.Set("x-genops-workload-id", "svc-a")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	// Should have an allow shadow event
+	events := spy.eventsByType("listener_shadow")
+	found := false
+	for _, e := range events {
+		if e.Attributes["decision_shadow"] == ShadowAllow {
+			found = true
+			if e.Attributes["mode"] != "listener" {
+				t.Error("expected mode=listener in shadow event")
+			}
+			if e.Attributes["provider"] != "openai" {
+				t.Errorf("expected provider openai, got %v", e.Attributes["provider"])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected allow shadow event")
+	}
+}
+
+func TestListenerMode_EnforcementMode_StillBlocks(t *testing.T) {
+	// Verify enforcement mode is unchanged — identity failure returns 403
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	h, _ := makeHandler(t, upstream.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "http://api.openai.com/v1/chat/completions",
+		strings.NewReader(`{"max_tokens":100}`))
+	// No workload ID header
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("enforcement mode should return 403 on identity failure, got %d", w.Code)
+	}
+}
+
+// ============================================================
+// Phase 6: Listener Accounting Key Tests
+// ============================================================
+
+func TestListenerMode_AccountingKey_UsesListenerKey(t *testing.T) {
+	// Verify that listener mode uses the listenerAccountingKey for Reserve/Record,
+	// not the pod-derived workload identity.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl-abc", "model": "gpt-4",
+			"choices": []map[string]any{{"message": map[string]string{"content": "Hi"}}},
+			"usage":   map[string]int{"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15},
+		})
+	}))
+	defer upstream.Close()
+
+	acctKey := "listener_policy/custom-policy"
+	tracker := budget.NewTracker()
+	tracker.Register(acctKey, budget.BudgetParams{WindowSeconds: 60, LimitTokens: 10000, BurstTokens: 1000})
+	spy := newBudgetSpy(tracker)
+
+	cfg := testConfig()
+	cfg.Upstreams["openai"] = upstream.URL
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	// Use a fixed resolver that returns a pod-derived identity.
+	podIdent := identity.WorkloadIdentity{
+		WorkloadID:   "prod/Deployment/my-app",
+		Namespace:    "prod",
+		WorkloadKind: "Deployment",
+		WorkloadName: "my-app",
+	}
+
+	h := NewHandler(HandlerConfig{
+		Resolver:              &fixedResolver{ident: podIdent},
+		PolicyEngine:          policy.NewOverrideEngine(&cfg.Policies[0]),
+		BudgetTracker:         spy,
+		FanoutTracker:         &fanout.NoOpTracker{},
+		Decider:               enforce.NewTierDecider(),
+		Emitter:               &spyEmitter{},
+		Upstreams:             cfg.Upstreams,
+		SSEExtraction:         false,
+		Logger:                logger,
+		Mode:                  "listener",
+		ListenerAccountingKey: acctKey,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://api.openai.com/v1/chat/completions",
+		strings.NewReader(`{"max_tokens":100}`))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Verify Reserve was called with the accounting key, not the pod identity.
+	spy.mu.Lock()
+	reserveKeys := append([]string{}, spy.reserveKeys...)
+	recordKeys := append([]string{}, spy.recordKeys...)
+	spy.mu.Unlock()
+
+	for _, k := range reserveKeys {
+		if k != acctKey {
+			t.Errorf("Reserve called with key %q, expected %q", k, acctKey)
+		}
+	}
+	for _, k := range recordKeys {
+		if k != acctKey {
+			t.Errorf("Record called with key %q, expected %q", k, acctKey)
+		}
+	}
+}
+
+func TestListenerMode_TwoPodIdentities_ShareAccountingBucket(t *testing.T) {
+	// Two different pod identities using the same policy share one budget bucket.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl-abc", "model": "gpt-4",
+			"choices": []map[string]any{{"message": map[string]string{"content": "Hi"}}},
+			"usage":   map[string]int{"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15},
+		})
+	}))
+	defer upstream.Close()
+
+	acctKey := "_default"
+	tracker := budget.NewTracker()
+	tracker.Register(acctKey, budget.BudgetParams{WindowSeconds: 60, LimitTokens: 10000, BurstTokens: 1000})
+
+	cfg := testConfig()
+	cfg.Upstreams["openai"] = upstream.URL
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	pods := []identity.WorkloadIdentity{
+		{WorkloadID: "prod/Deployment/app-a", Namespace: "prod", WorkloadKind: "Deployment", WorkloadName: "app-a"},
+		{WorkloadID: "prod/Deployment/app-b", Namespace: "prod", WorkloadKind: "Deployment", WorkloadName: "app-b"},
+	}
+
+	for _, pod := range pods {
+		h := NewHandler(HandlerConfig{
+			Resolver:              &fixedResolver{ident: pod},
+			PolicyEngine:          policy.NewOverrideEngine(&cfg.Policies[0]),
+			BudgetTracker:         tracker,
+			FanoutTracker:         &fanout.NoOpTracker{},
+			Decider:               enforce.NewTierDecider(),
+			Emitter:               &spyEmitter{},
+			Upstreams:             cfg.Upstreams,
+			SSEExtraction:         false,
+			Logger:                logger,
+			Mode:                  "listener",
+			ListenerAccountingKey: acctKey,
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "http://api.openai.com/v1/chat/completions",
+			strings.NewReader(`{"max_tokens":100}`))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for pod %s, got %d", pod.WorkloadID, w.Code)
+		}
+	}
+
+	// Both pods should have drawn from the same "_default" bucket.
+	status, err := tracker.Status(context.Background(), acctKey)
+	if err != nil {
+		t.Fatalf("status error: %v", err)
+	}
+	// Two requests each reserving tokens — WindowTokensUsed should reflect both.
+	if status.WindowTokensUsed == 0 {
+		t.Error("expected non-zero WindowTokensUsed from shared bucket")
+	}
+}
+
+func TestOverrideEngine_AlwaysReturnsOverridePolicy(t *testing.T) {
+	pol := &config.Policy{
+		ID: "override-pol",
+		Budgets: config.Budgets{
+			RollingTokens: config.RollingTokenBudget{
+				WindowSeconds: 60, LimitTokens: 5000, BurstTokens: 500,
+			},
+		},
+	}
+
+	engine := policy.NewOverrideEngine(pol)
+
+	// Any workload identity should return the override policy.
+	ids := []identity.WorkloadIdentity{
+		{WorkloadID: "prod/Deployment/app-a"},
+		{WorkloadID: "staging/StatefulSet/db"},
+		{},
+	}
+
+	for _, id := range ids {
+		got, ok := engine.Lookup(id)
+		if !ok {
+			t.Errorf("expected policy for %s, got not found", id.WorkloadID)
+		}
+		if got.ID != "override-pol" {
+			t.Errorf("expected override-pol, got %s", got.ID)
+		}
+	}
+}
+
+// fixedResolver always returns the same identity, simulating PodResolver with fixed env vars.
+type fixedResolver struct {
+	ident identity.WorkloadIdentity
+}
+
+func (r *fixedResolver) Resolve(_ *http.Request) (identity.WorkloadIdentity, error) {
+	return r.ident, nil
 }

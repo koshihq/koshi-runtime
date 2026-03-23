@@ -1,0 +1,24 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-workload
+  namespace: default
+  labels:
+    app: demo-workload
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-workload
+  template:
+    metadata:
+      labels:
+        app: demo-workload
+    spec:
+      containers:
+        - name: app
+          image: curlimages/curl:latest
+          command: ["sleep", "infinity"]
+          # OPENAI_BASE_URL will be injected by the Koshi webhook
+          # pointing at http://localhost:15080

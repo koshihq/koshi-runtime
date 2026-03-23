@@ -41,9 +41,10 @@ func (d *TierDecider) Evaluate(policy *config.Policy, bs budget.BudgetStatus, _ 
 	// Check for explicit kill configuration.
 	if policy.DecisionTiers.Tier3Platform.Action == "kill_workload" {
 		return Decision{
-			Action: ActionKill,
-			Tier:   3,
-			Reason: "budget exceeded, kill_workload configured",
+			Action:     ActionKill,
+			Tier:       3,
+			Reason:     "budget exceeded, kill_workload configured",
+			ReasonCode: ReasonBudgetExhaustedKill,
 		}
 	}
 
@@ -53,6 +54,7 @@ func (d *TierDecider) Evaluate(policy *config.Policy, bs budget.BudgetStatus, _ 
 		Action:     ActionThrottle,
 		Tier:       1,
 		Reason:     "budget exceeded, no burst remaining",
+		ReasonCode: ReasonBudgetExhaustedThrottle,
 		RetryAfter: retryAfter,
 	}
 }
@@ -67,8 +69,9 @@ func CheckPerRequestGuard(policy *config.Policy, requestMaxTokens int64) *Decisi
 		return nil
 	}
 	return &Decision{
-		Action: ActionThrottle,
-		Tier:   1,
-		Reason: "max_tokens exceeds per-request guard",
+		Action:     ActionThrottle,
+		Tier:       1,
+		Reason:     "max_tokens exceeds per-request guard",
+		ReasonCode: ReasonGuardMaxTokens,
 	}
 }

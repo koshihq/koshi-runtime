@@ -11,7 +11,10 @@ var ErrMissingIdentity = errors.New("missing workload identity")
 
 // WorkloadIdentity represents a resolved workload.
 type WorkloadIdentity struct {
-	WorkloadID string
+	WorkloadID   string
+	Namespace    string // Populated by PodResolver; empty for HeaderResolver.
+	WorkloadKind string // Populated by PodResolver; empty for HeaderResolver.
+	WorkloadName string // Populated by PodResolver; empty for HeaderResolver.
 }
 
 // Resolver resolves a workload identity from an incoming HTTP request.

@@ -1,0 +1,33 @@
+{{- if .Values.injector.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ .Release.Name }}-koshi-injector
+  labels:
+    app: koshi-injector
+  {{- if not .Values.webhook.caBundle }}
+  annotations:
+    # caBundle is patched by the cert-gen job.
+    koshi.io/cert-gen: "true"
+  {{- end }}
+webhooks:
+  - name: inject.koshi.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    clientConfig:
+      service:
+        name: {{ .Release.Name }}-koshi-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /mutate
+      {{- if .Values.webhook.caBundle }}
+      caBundle: {{ .Values.webhook.caBundle }}
+      {{- end }}
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        operations: ["CREATE"]
+    namespaceSelector:
+      {{- toYaml .Values.namespaceSelector | nindent 6 }}
+{{- end }}

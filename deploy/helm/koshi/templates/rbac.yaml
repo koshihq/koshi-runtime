@@ -1,0 +1,39 @@
+{{- if .Values.injector.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-koshi-injector
+  labels:
+    app: koshi-injector
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-koshi-injector
+  labels:
+    app: koshi-injector
+rules:
+  # Read namespaces for opt-in label validation.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+  # Read pods for owner reference resolution.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-koshi-injector
+  labels:
+    app: koshi-injector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-koshi-injector
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-koshi-injector
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -47,6 +47,9 @@ else
     kind create cluster --name "${CLUSTER_NAME}"
 fi
 
+info "Waiting for cluster nodes to be ready..."
+kubectl wait --for=condition=Ready nodes --all --timeout=120s
+
 # --- 2. Install Koshi from OCI chart ---
 info "Installing Koshi chart ${CHART_VERSION} with image ${IMAGE_REPO}:${IMAGE_TAG}"
 helm install koshi "oci://ghcr.io/koshihq/charts/koshi" \
@@ -54,7 +57,7 @@ helm install koshi "oci://ghcr.io/koshihq/charts/koshi" \
     --namespace "${NAMESPACE}" --create-namespace \
     --set "image.repository=${IMAGE_REPO}" \
     --set "image.tag=${IMAGE_TAG}" \
-    --wait --timeout 120s
+    --wait --timeout 10m
 
 # --- 3. Verify injector is ready ---
 info "Waiting for injector deployment..."

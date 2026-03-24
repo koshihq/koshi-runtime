@@ -27,9 +27,13 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})).With("stream", "runtime")
 
-	// Role dispatch: injector runs the admission webhook server.
-	if os.Getenv("KOSHI_ROLE") == "injector" {
+	// Role dispatch.
+	switch os.Getenv("KOSHI_ROLE") {
+	case "injector":
 		runInjector(logger)
+		return
+	case "certgen":
+		runCertgen(logger)
 		return
 	}
 

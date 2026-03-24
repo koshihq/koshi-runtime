@@ -10,6 +10,10 @@ on:
         description: "Dry run (skip publish steps)"
         required: false
         default: "false"
+      release_tag:
+        description: "Release tag (e.g. v0.2.0) — required for packaging/publishing"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -52,10 +56,19 @@ jobs:
       - name: Derive versions
         id: versions
         run: |
-          RAW_TAG="${GITHUB_REF_NAME}"
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            RAW_TAG="${GITHUB_REF_NAME}"
+          elif [[ -n "${{ inputs.release_tag }}" ]]; then
+            RAW_TAG="${{ inputs.release_tag }}"
+          else
+            echo "No release tag — verify and build only"
+            echo "HAS_RELEASE_TAG=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           SEMVER="${RAW_TAG#v}"
           echo "RAW_TAG=${RAW_TAG}" >> "$GITHUB_OUTPUT"
           echo "SEMVER=${SEMVER}" >> "$GITHUB_OUTPUT"
+          echo "HAS_RELEASE_TAG=true" >> "$GITHUB_OUTPUT"
           echo "Raw tag: ${RAW_TAG}"
           echo "Semver:  ${SEMVER}"
 
@@ -115,24 +128,28 @@ jobs:
       # --- Helm chart package and push ---
 
       - name: Install Helm
+        if: steps.versions.outputs.HAS_RELEASE_TAG == 'true'
         uses: azure/setup-helm@v5
 
       - name: Login to GHCR (Helm OCI)
+        if: steps.versions.outputs.HAS_RELEASE_TAG == 'true'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Package Helm chart
+        if: steps.versions.outputs.HAS_RELEASE_TAG == 'true'
         run: |
           helm package deploy/helm/koshi \
             --version ${{ steps.versions.outputs.SEMVER }} \
             --app-version ${{ steps.versions.outputs.RAW_TAG }}
 
       - name: Push Helm chart to GHCR
-        if: ${{ inputs.dry_run != 'true' }}
+        if: steps.versions.outputs.HAS_RELEASE_TAG == 'true' && inputs.dry_run != 'true'
         run: helm push koshi-${{ steps.versions.outputs.SEMVER }}.tgz oci://ghcr.io/koshihq/charts
 
       # --- GitHub Release ---
 
       - name: Generate release notes
+        if: steps.versions.outputs.HAS_RELEASE_TAG == 'true'
         run: |
           RAW_TAG="${{ steps.versions.outputs.RAW_TAG }}"
           SEMVER="${{ steps.versions.outputs.SEMVER }}"
@@ -161,7 +178,7 @@ jobs:
           NOTES
 
       - name: Create GitHub Release
-        if: ${{ inputs.dry_run != 'true' }}
+        if: steps.versions.outputs.HAS_RELEASE_TAG == 'true' && inputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

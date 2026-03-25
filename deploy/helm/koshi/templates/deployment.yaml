@@ -14,6 +14,7 @@ spec:
       labels:
         app: koshi
     spec:
+      {{- $runtimePort := ternary 15080 8080 (eq .Values.mode "listener") -}}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -27,7 +28,7 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
-            - containerPort: 8080
+            - containerPort: {{ $runtimePort }}
               protocol: TCP
           env:
             - name: KOSHI_CONFIG_PATH
@@ -35,14 +36,14 @@ spec:
           livenessProbe:
             httpGet:
               path: {{ .Values.livenessProbe.httpGet.path }}
-              port: {{ .Values.livenessProbe.httpGet.port }}
+              port: {{ $runtimePort }}
             initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
             failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
           readinessProbe:
             httpGet:
               path: {{ .Values.readinessProbe.httpGet.path }}
-              port: {{ .Values.readinessProbe.httpGet.port }}
+              port: {{ $runtimePort }}
             initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
             failureThreshold: {{ .Values.readinessProbe.failureThreshold }}

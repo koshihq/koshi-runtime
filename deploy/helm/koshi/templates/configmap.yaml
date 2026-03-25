@@ -8,6 +8,8 @@ data:
     mode:
       type: "listener"
 
+    listen_addr: ":15080"
+
     upstreams:
       openai: "https://api.openai.com"
       anthropic: "https://api.anthropic.com"
@@ -25,6 +27,8 @@ data:
         tier1_auto:
           action: "throttle"
     {{- else }}
+    listen_addr: ":8080"
+
     upstreams:
       openai: "https://api.openai.com"
       # anthropic: "https://api.anthropic.com"

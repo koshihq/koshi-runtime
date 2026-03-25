@@ -32,6 +32,7 @@ pass()  { echo "PASS: $*"; }
 cleanup() {
     info "Cleaning up..."
     [ -n "${PORT_FWD_PID}" ] && kill "${PORT_FWD_PID}" 2>/dev/null || true
+    [ -n "${PORT_FWD_PID}" ] && wait "${PORT_FWD_PID}" 2>/dev/null || true
     kubectl delete -f "${DEMO_DIR}/workload.yaml" --ignore-not-found 2>/dev/null || true
     kubectl delete -f "${DEMO_DIR}/mock-upstream.yaml" --ignore-not-found 2>/dev/null || true
     kubectl label namespace default runtime.getkoshi.ai/inject- 2>/dev/null || true
@@ -124,6 +125,7 @@ for attempt in $(seq 1 10); do
 done
 
 kill "${PORT_FWD_PID}" 2>/dev/null || true
+wait "${PORT_FWD_PID}" 2>/dev/null || true
 PORT_FWD_PID=""
 if echo "${METRICS}" | grep -q "koshi_listener_decisions_total"; then
     pass "Listener metrics present"

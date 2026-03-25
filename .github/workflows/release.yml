@@ -19,6 +19,10 @@ permissions:
   contents: write
   packages: write
 
+# Force Docker actions (login-action@v3, setup-qemu-action@v3,
+# setup-buildx-action@v3, metadata-action@v5, build-push-action@v6)
+# to Node 24 runtime. These actions do not yet have Node 24-native
+# major versions. Revisit before June 2, 2026 (GitHub default switch).
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 

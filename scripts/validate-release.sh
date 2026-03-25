@@ -72,7 +72,10 @@ kubectl apply -f "${DEMO_DIR}/mock-upstream.yaml"
 kubectl label namespace default runtime.getkoshi.ai/inject=true --overwrite
 kubectl apply -f "${DEMO_DIR}/workload.yaml"
 
-info "Waiting for demo workload..."
+info "Waiting for demo workload rollout..."
+kubectl rollout status deployment/demo-workload -n default --timeout=120s
+
+info "Waiting for demo workload pod readiness..."
 kubectl wait --for=condition=ready pod -l app=demo-workload -n default --timeout=120s
 
 # --- 5. Verify sidecar injection ---

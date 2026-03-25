@@ -23,6 +23,7 @@ IMAGE_REPO="${3:-ghcr.io/koshihq/koshi-runtime}"
 CLUSTER_NAME="koshi-release-test"
 NAMESPACE="koshi-system"
 DEMO_DIR="$(cd "$(dirname "$0")/../demo/local" && pwd)"
+PORT_FWD_PID=""
 
 info()  { echo "==> $*"; }
 fail()  { echo "FAIL: $*" >&2; exit 1; }
@@ -30,6 +31,7 @@ pass()  { echo "PASS: $*"; }
 
 cleanup() {
     info "Cleaning up..."
+    [ -n "${PORT_FWD_PID}" ] && kill "${PORT_FWD_PID}" 2>/dev/null || true
     kubectl delete -f "${DEMO_DIR}/workload.yaml" --ignore-not-found 2>/dev/null || true
     kubectl delete -f "${DEMO_DIR}/mock-upstream.yaml" --ignore-not-found 2>/dev/null || true
     kubectl label namespace default runtime.getkoshi.ai/inject- 2>/dev/null || true
@@ -111,8 +113,18 @@ fi
 
 # --- 8. Validate metrics ---
 info "Checking metrics endpoint..."
-METRICS=$(kubectl exec deploy/demo-workload -c koshi-listener -- \
-    wget -qO- http://localhost:15080/metrics 2>/dev/null || true)
+kubectl port-forward deploy/demo-workload 15080:15080 >/dev/null 2>&1 &
+PORT_FWD_PID=$!
+
+METRICS=""
+for attempt in $(seq 1 10); do
+    METRICS=$(curl -fsS http://127.0.0.1:15080/metrics 2>/dev/null) && break
+    METRICS=""
+    sleep 1
+done
+
+kill "${PORT_FWD_PID}" 2>/dev/null || true
+PORT_FWD_PID=""
 if echo "${METRICS}" | grep -q "koshi_listener_decisions_total"; then
     pass "Listener metrics present"
 else

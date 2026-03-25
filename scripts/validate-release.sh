@@ -47,6 +47,8 @@ else
     kind create cluster --name "${CLUSTER_NAME}"
 fi
 
+kubectl config use-context "kind-${CLUSTER_NAME}"
+
 info "Waiting for cluster nodes to be ready..."
 kubectl wait --for=condition=Ready nodes --all --timeout=120s
 

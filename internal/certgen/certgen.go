@@ -21,18 +21,17 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// Run generates a self-signed CA and serving certificate, writes them to a
-// Kubernetes TLS Secret, and patches the caBundle on a MutatingWebhookConfiguration.
-// All parameters are read from environment variables set by the Helm cert-gen Job.
-func Run(ctx context.Context, logger *slog.Logger) error {
+// RunSecretPhase generates a self-signed CA and serving certificate, then
+// creates or updates the TLS Secret. This runs as a pre-install Helm hook
+// so the injector deployment can mount the secret on first start.
+func RunSecretPhase(ctx context.Context, logger *slog.Logger) error {
 	namespace := os.Getenv("KOSHI_NAMESPACE")
 	serviceName := os.Getenv("KOSHI_SERVICE_NAME")
 	secretName := os.Getenv("KOSHI_SECRET_NAME")
-	webhookName := os.Getenv("KOSHI_WEBHOOK_NAME")
 
-	if namespace == "" || serviceName == "" || secretName == "" || webhookName == "" {
-		return fmt.Errorf("required env vars: KOSHI_NAMESPACE=%q, KOSHI_SERVICE_NAME=%q, KOSHI_SECRET_NAME=%q, KOSHI_WEBHOOK_NAME=%q",
-			namespace, serviceName, secretName, webhookName)
+	if namespace == "" || serviceName == "" || secretName == "" {
+		return fmt.Errorf("required env vars: KOSHI_NAMESPACE=%q, KOSHI_SERVICE_NAME=%q, KOSHI_SECRET_NAME=%q",
+			namespace, serviceName, secretName)
 	}
 
 	dnsName := serviceName + "." + namespace + ".svc"
@@ -50,29 +49,68 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 
 	logger.Info("certificates generated, connecting to cluster")
 
-	config, err := rest.InClusterConfig()
+	client, err := newClient()
 	if err != nil {
-		return fmt.Errorf("in-cluster config: %w", err)
+		return err
 	}
 
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("create client: %w", err)
-	}
-
-	// Create or update the TLS Secret.
-	if err := ensureSecret(ctx, client, namespace, secretName, certPEM, keyPEM); err != nil {
+	if err := ensureSecret(ctx, client, namespace, secretName, caPEM, certPEM, keyPEM); err != nil {
 		return fmt.Errorf("ensure secret: %w", err)
 	}
 	logger.Info("TLS secret written", "name", secretName, "namespace", namespace)
 
-	// Patch caBundle on the MutatingWebhookConfiguration.
+	return nil
+}
+
+// RunCABundlePhase reads the CA from the TLS Secret and patches the caBundle
+// field on the MutatingWebhookConfiguration. This runs as a post-install Helm
+// hook after the webhook manifest exists.
+func RunCABundlePhase(ctx context.Context, logger *slog.Logger) error {
+	namespace := os.Getenv("KOSHI_NAMESPACE")
+	secretName := os.Getenv("KOSHI_SECRET_NAME")
+	webhookName := os.Getenv("KOSHI_WEBHOOK_NAME")
+
+	if namespace == "" || secretName == "" || webhookName == "" {
+		return fmt.Errorf("required env vars: KOSHI_NAMESPACE=%q, KOSHI_SECRET_NAME=%q, KOSHI_WEBHOOK_NAME=%q",
+			namespace, secretName, webhookName)
+	}
+
+	client, err := newClient()
+	if err != nil {
+		return err
+	}
+
+	// Read CA PEM from the TLS Secret (stored by the secret phase).
+	secret, err := client.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get secret %q: %w", secretName, err)
+	}
+
+	caPEM, ok := secret.Data["ca.crt"]
+	if !ok || len(caPEM) == 0 {
+		return fmt.Errorf("secret %q missing ca.crt data key", secretName)
+	}
+
+	logger.Info("patching webhook caBundle", "webhook", webhookName)
+
 	if err := patchWebhookCABundle(ctx, client, webhookName, caPEM); err != nil {
 		return fmt.Errorf("patch webhook caBundle: %w", err)
 	}
 	logger.Info("webhook caBundle patched", "name", webhookName)
 
 	return nil
+}
+
+func newClient() (kubernetes.Interface, error) {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("in-cluster config: %w", err)
+	}
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("create client: %w", err)
+	}
+	return client, nil
 }
 
 func generateCA() (caPEM, caKeyPEM []byte, err error) {
@@ -155,21 +193,20 @@ func generateServingCert(caPEM, caKeyPEM []byte, dnsNames []string) (certPEM, ke
 	return certPEM, keyPEM, nil
 }
 
-func ensureSecret(ctx context.Context, client kubernetes.Interface, namespace, name string, certPEM, keyPEM []byte) error {
+func ensureSecret(ctx context.Context, client kubernetes.Interface, namespace, name string, caPEM, certPEM, keyPEM []byte) error {
 	secrets := client.CoreV1().Secrets(namespace)
 
 	existing, err := secrets.Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
-		// Secret exists — update it.
 		existing.Data = map[string][]byte{
 			corev1.TLSCertKey:       certPEM,
 			corev1.TLSPrivateKeyKey: keyPEM,
+			"ca.crt":                caPEM,
 		}
 		_, err = secrets.Update(ctx, existing, metav1.UpdateOptions{})
 		return err
 	}
 
-	// Create new secret.
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -179,6 +216,7 @@ func ensureSecret(ctx context.Context, client kubernetes.Interface, namespace, n
 		Data: map[string][]byte{
 			corev1.TLSCertKey:       certPEM,
 			corev1.TLSPrivateKeyKey: keyPEM,
+			"ca.crt":                caPEM,
 		},
 	}
 	_, err = secrets.Create(ctx, secret, metav1.CreateOptions{})
@@ -193,12 +231,6 @@ func patchWebhookCABundle(ctx context.Context, client kubernetes.Interface, name
 		return fmt.Errorf("get webhook %q: %w", name, err)
 	}
 
-	// Patch caBundle on all webhook entries.
-	for i := range existing.Webhooks {
-		existing.Webhooks[i].ClientConfig.CABundle = caPEM
-	}
-
-	// Use a strategic merge patch with the caBundle set.
 	type webhookPatch struct {
 		Webhooks []map[string]interface{} `json:"webhooks"`
 	}

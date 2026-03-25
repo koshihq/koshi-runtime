@@ -264,6 +264,9 @@ The binary, image, and Helm chart are unchanged. Enforcement activates the same 
 # Remove Koshi entirely
 helm uninstall koshi -n koshi-system
 
+# Remove the auto-generated TLS secret (created by cert-gen hook, not managed by Helm release)
+kubectl delete secret koshi-koshi-webhook-tls -n koshi-system 2>/dev/null || true
+
 # Remove namespace label (stops new pods from getting sidecars)
 kubectl label namespace my-namespace runtime.getkoshi.ai/inject-
 

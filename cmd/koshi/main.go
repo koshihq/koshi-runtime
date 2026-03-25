@@ -32,8 +32,11 @@ func main() {
 	case "injector":
 		runInjector(logger)
 		return
-	case "certgen":
-		runCertgen(logger)
+	case "certgen-secret":
+		runCertgenSecret(logger)
+		return
+	case "certgen-cabundle":
+		runCertgenCABundle(logger)
 		return
 	}
 

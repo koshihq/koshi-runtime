@@ -137,8 +137,17 @@ func buildPatches(cfg WebhookConfig, pod *corev1.Pod, namespace string) []JSONPa
 	}
 
 	for i, c := range pod.Spec.Containers {
+		needsEnvInit := len(c.Env) == 0
 		for envName, envValue := range providerEnvs {
 			if !hasEnvVar(c.Env, envName) {
+				if needsEnvInit {
+					patches = append(patches, JSONPatchOp{
+						Op:    "add",
+						Path:  fmt.Sprintf("/spec/containers/%d/env", i),
+						Value: []corev1.EnvVar{},
+					})
+					needsEnvInit = false
+				}
 				patches = append(patches, JSONPatchOp{
 					Op:   "add",
 					Path: fmt.Sprintf("/spec/containers/%d/env/-", i),
@@ -152,6 +161,13 @@ func buildPatches(cfg WebhookConfig, pod *corev1.Pod, namespace string) []JSONPa
 	}
 
 	// Add config volume if not present.
+	if len(pod.Spec.Volumes) == 0 {
+		patches = append(patches, JSONPatchOp{
+			Op:    "add",
+			Path:  "/spec/volumes",
+			Value: []corev1.Volume{},
+		})
+	}
 	if !hasVolume(pod.Spec.Volumes, "koshi-config") {
 		patches = append(patches, JSONPatchOp{
 			Op:   "add",

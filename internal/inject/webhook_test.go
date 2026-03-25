@@ -226,6 +226,76 @@ func TestWebhook_NoClobberExistingEnv(t *testing.T) {
 	}
 }
 
+func TestWebhook_NilEnvAndVolumes(t *testing.T) {
+	// Pod with no env and no volumes — JSON patch must create arrays before appending.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "bare-pod",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "ReplicaSet", Name: "bare-app-abc123"},
+			},
+			Labels: map[string]string{"pod-template-hash": "abc123"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Name: "app", Image: "myapp:latest"},
+			},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Allowed {
+		t.Fatal("expected allowed")
+	}
+
+	var patches []JSONPatchOp
+	if err := json.Unmarshal(resp.Patch, &patches); err != nil {
+		t.Fatalf("failed to unmarshal patch: %v", err)
+	}
+
+	// Verify env array init appears before env appends.
+	envInitIdx := -1
+	envAppendIdx := -1
+	volumeInitIdx := -1
+	volumeAppendIdx := -1
+
+	for i, p := range patches {
+		switch {
+		case p.Op == "add" && p.Path == "/spec/containers/0/env":
+			envInitIdx = i
+		case p.Op == "add" && p.Path == "/spec/containers/0/env/-" && envAppendIdx == -1:
+			envAppendIdx = i
+		case p.Op == "add" && p.Path == "/spec/volumes":
+			volumeInitIdx = i
+		case p.Op == "add" && p.Path == "/spec/volumes/-" && volumeAppendIdx == -1:
+			volumeAppendIdx = i
+		}
+	}
+
+	if envInitIdx == -1 {
+		t.Error("expected env array init patch (/spec/containers/0/env)")
+	}
+	if envAppendIdx == -1 {
+		t.Error("expected env append patch (/spec/containers/0/env/-)")
+	}
+	if envInitIdx != -1 && envAppendIdx != -1 && envInitIdx >= envAppendIdx {
+		t.Error("env array init must come before env append")
+	}
+
+	if volumeInitIdx == -1 {
+		t.Error("expected volumes array init patch (/spec/volumes)")
+	}
+	if volumeAppendIdx == -1 {
+		t.Error("expected volumes append patch (/spec/volumes/-)")
+	}
+	if volumeInitIdx != -1 && volumeAppendIdx != -1 && volumeInitIdx >= volumeAppendIdx {
+		t.Error("volumes array init must come before volumes append")
+	}
+}
+
 func checkEnv(t *testing.T, envs []corev1.EnvVar, name, expectedValue string) {
 	t.Helper()
 	for _, e := range envs {

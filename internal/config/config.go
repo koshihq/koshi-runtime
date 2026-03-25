@@ -226,6 +226,35 @@ func validatePolicy(p *Policy) error {
 	return nil
 }
 
+// DefaultListenerConfig returns the standard in-memory listener config used by
+// injected sidecars that have no KOSHI_CONFIG_PATH set.
+func DefaultListenerConfig() *Config {
+	return &Config{
+		Mode:       Mode{Type: "listener"},
+		ListenAddr: ":15080",
+		Upstreams: map[string]string{
+			"openai":    "https://api.openai.com",
+			"anthropic": "https://api.anthropic.com",
+		},
+		DefaultPolicy: &Policy{
+			ID: "_listener_default",
+			Budgets: Budgets{
+				RollingTokens: RollingTokenBudget{
+					WindowSeconds: 3600,
+					LimitTokens:   1000000,
+					BurstTokens:   0,
+				},
+			},
+			Guards: Guards{
+				MaxTokensPerRequest: 32768,
+			},
+			DecisionTiers: DecisionTiers{
+				Tier1Auto: TierAction{Action: "throttle"},
+			},
+		},
+	}
+}
+
 // SSEExtractionEnabled returns whether SSE extraction is enabled. Defaults to true.
 func (c *Config) SSEExtractionEnabled() bool {
 	if c.SSEExtraction == nil {

@@ -44,17 +44,20 @@ func main() {
 
 	// Load config.
 	configPath := os.Getenv("KOSHI_CONFIG_PATH")
-	if configPath == "" {
-		configPath = "/etc/koshi/config.yaml"
-	}
 
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		logger.Error("failed to load config", "error", err, "path", configPath)
-		os.Exit(1)
+	var cfg *config.Config
+	if configPath != "" {
+		var err error
+		cfg, err = config.Load(configPath)
+		if err != nil {
+			logger.Error("failed to load config", "error", err, "path", configPath)
+			os.Exit(1)
+		}
+		logger.Info("config loaded", "mode", cfg.Mode.Type, "source", configPath, "workloads", len(cfg.Workloads), "policies", len(cfg.Policies))
+	} else {
+		cfg = config.DefaultListenerConfig()
+		logger.Info("no config path set, using default listener config", "mode", cfg.Mode.Type)
 	}
-
-	logger.Info("config loaded", "mode", cfg.Mode.Type, "workloads", len(cfg.Workloads), "policies", len(cfg.Policies))
 
 	// Wire dependencies based on mode.
 	emitter := emit.NewLogEmitter(eventLogger)

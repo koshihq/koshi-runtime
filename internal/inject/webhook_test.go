@@ -226,8 +226,8 @@ func TestWebhook_NoClobberExistingEnv(t *testing.T) {
 	}
 }
 
-func TestWebhook_NilEnvAndVolumes(t *testing.T) {
-	// Pod with no env and no volumes — JSON patch must create arrays before appending.
+func TestWebhook_NilEnv(t *testing.T) {
+	// Pod with no env — JSON patch must create env array before appending.
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "bare-pod",
@@ -259,8 +259,6 @@ func TestWebhook_NilEnvAndVolumes(t *testing.T) {
 	// Verify env array init appears before env appends.
 	envInitIdx := -1
 	envAppendIdx := -1
-	volumeInitIdx := -1
-	volumeAppendIdx := -1
 
 	for i, p := range patches {
 		switch {
@@ -268,10 +266,6 @@ func TestWebhook_NilEnvAndVolumes(t *testing.T) {
 			envInitIdx = i
 		case p.Op == "add" && p.Path == "/spec/containers/0/env/-" && envAppendIdx == -1:
 			envAppendIdx = i
-		case p.Op == "add" && p.Path == "/spec/volumes":
-			volumeInitIdx = i
-		case p.Op == "add" && p.Path == "/spec/volumes/-" && volumeAppendIdx == -1:
-			volumeAppendIdx = i
 		}
 	}
 
@@ -285,14 +279,11 @@ func TestWebhook_NilEnvAndVolumes(t *testing.T) {
 		t.Error("env array init must come before env append")
 	}
 
-	if volumeInitIdx == -1 {
-		t.Error("expected volumes array init patch (/spec/volumes)")
-	}
-	if volumeAppendIdx == -1 {
-		t.Error("expected volumes append patch (/spec/volumes/-)")
-	}
-	if volumeInitIdx != -1 && volumeAppendIdx != -1 && volumeInitIdx >= volumeAppendIdx {
-		t.Error("volumes array init must come before volumes append")
+	// No volume patches should be present (sidecar no longer mounts a ConfigMap).
+	for _, p := range patches {
+		if p.Path == "/spec/volumes" || p.Path == "/spec/volumes/-" {
+			t.Errorf("unexpected volume patch: %s %s", p.Op, p.Path)
+		}
 	}
 }
 

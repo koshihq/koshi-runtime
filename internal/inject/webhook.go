@@ -104,14 +104,10 @@ func buildPatches(cfg WebhookConfig, pod *corev1.Pod, namespace string) []JSONPa
 			{ContainerPort: int32(cfg.SidecarPort), Protocol: corev1.ProtocolTCP},
 		},
 		Env: []corev1.EnvVar{
-			{Name: "KOSHI_CONFIG_PATH", Value: cfg.ConfigPath + "/config.yaml"},
 			{Name: "KOSHI_POD_NAMESPACE", Value: namespace},
 			{Name: "KOSHI_WORKLOAD_KIND", Value: kind},
 			{Name: "KOSHI_WORKLOAD_NAME", Value: name},
 			{Name: "KOSHI_POD_NAME", Value: podName},
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "koshi-config", MountPath: cfg.ConfigPath, ReadOnly: true},
 		},
 	}
 
@@ -160,31 +156,6 @@ func buildPatches(cfg WebhookConfig, pod *corev1.Pod, namespace string) []JSONPa
 		}
 	}
 
-	// Add config volume if not present.
-	if len(pod.Spec.Volumes) == 0 {
-		patches = append(patches, JSONPatchOp{
-			Op:    "add",
-			Path:  "/spec/volumes",
-			Value: []corev1.Volume{},
-		})
-	}
-	if !hasVolume(pod.Spec.Volumes, "koshi-config") {
-		patches = append(patches, JSONPatchOp{
-			Op:   "add",
-			Path: "/spec/volumes/-",
-			Value: corev1.Volume{
-				Name: "koshi-config",
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: "koshi-config",
-						},
-					},
-				},
-			},
-		})
-	}
-
 	// Add scrape annotations.
 	if len(cfg.ScrapeAnnotations) > 0 {
 		if pod.Annotations == nil {
@@ -218,15 +189,6 @@ func buildPatches(cfg WebhookConfig, pod *corev1.Pod, namespace string) []JSONPa
 func hasEnvVar(envs []corev1.EnvVar, name string) bool {
 	for _, e := range envs {
 		if e.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func hasVolume(volumes []corev1.Volume, name string) bool {
-	for _, v := range volumes {
-		if v.Name == name {
 			return true
 		}
 	}

@@ -662,3 +662,29 @@ func TestSSEExtractionEnabled_Explicit(t *testing.T) {
 		t.Error("expected SSE extraction enabled when explicitly true")
 	}
 }
+
+func TestDefaultListenerConfig(t *testing.T) {
+	cfg := DefaultListenerConfig()
+
+	if cfg.Mode.Type != "listener" {
+		t.Errorf("expected listener mode, got %q", cfg.Mode.Type)
+	}
+	if cfg.ListenAddr != ":15080" {
+		t.Errorf("expected listen addr :15080, got %q", cfg.ListenAddr)
+	}
+	if cfg.Upstreams["openai"] != "https://api.openai.com" {
+		t.Error("missing openai upstream")
+	}
+	if cfg.Upstreams["anthropic"] != "https://api.anthropic.com" {
+		t.Error("missing anthropic upstream")
+	}
+	if cfg.DefaultPolicy == nil {
+		t.Fatal("expected default policy")
+	}
+	if cfg.DefaultPolicy.ID != "_listener_default" {
+		t.Errorf("expected policy ID _listener_default, got %q", cfg.DefaultPolicy.ID)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("default listener config should pass validation: %v", err)
+	}
+}

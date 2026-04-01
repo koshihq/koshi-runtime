@@ -22,20 +22,7 @@ sidecar:
       cpu: 50m
       memory: 32Mi
 
-# Override upstream to point at the in-cluster mock.
-config:
-  upstreams:
-    openai: "http://mock-upstream.default.svc.cluster.local:8080"
-    anthropic: "http://mock-upstream.default.svc.cluster.local:8080"
-  defaultPolicy:
-    id: "_listener_default"
-    budgets:
-      rollingTokens:
-        windowSeconds: 3600
-        limitTokens: 1000000
-        burstTokens: 0
-    guards:
-      maxTokensPerRequest: 32768
-    decisionTiers:
-      tier1Auto:
-        action: "throttle"
+# NOTE: The chart's ConfigMap template (templates/configmap.yaml) uses hardcoded
+# listener config and does not template from .Values.config.
+# Upstream overrides for the local demo are applied via the mock-upstream service
+# that the ConfigMap's hardcoded upstream URLs are replaced with at deploy time.

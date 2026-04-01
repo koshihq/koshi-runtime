@@ -11,6 +11,7 @@ Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys a
 ```bash
 # 1. Install into koshi-system
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
+  --version 0.2.11 \
   --namespace koshi-system --create-namespace
 
 # 2. Opt namespaces in — only labeled namespaces get the sidecar
@@ -38,7 +39,18 @@ curl http://localhost:15080/metrics | grep koshi_listener
 
 ### What Traffic Produces Signal
 
-Workloads produce governance signal when they send OpenAI- or Anthropic-compatible API requests. The webhook injects `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` env vars pointing at the sidecar. The sidecar evaluates the request against policy, emits a shadow event, and proxies the request to the real upstream transparently.
+Workloads produce governance signal when they send OpenAI- or Anthropic-compatible API requests through the sidecar. The webhook injects `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` env vars pointing at the sidecar (only if the container does not already set them). The sidecar evaluates the request against policy, emits a shadow event, and proxies the request to the real upstream transparently.
+
+**Prerequisites for signal:**
+- The workload's SDK or HTTP client must honor `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` env vars. The official OpenAI and Anthropic SDKs do this by default.
+- The workload must not already set these env vars in its pod spec — if present, the webhook will not overwrite them.
+- The workload must not hardcode provider URLs in application code or config files, bypassing the env vars entirely.
+
+**No signal? Check these first:**
+1. Verify the sidecar container exists: `kubectl get pod <pod> -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`
+2. Verify the env vars were injected: `kubectl get pod <pod> -o jsonpath='{.spec.containers[0].env[*].name}'` — look for `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`
+3. If the env vars are missing, the workload's pod spec likely already defines them — check the Deployment manifest
+4. If the env vars are present but no events appear, the SDK may not be honoring them — check whether the app uses a custom HTTP client or hardcoded base URL
 
 ## What Gets Installed
 
@@ -46,7 +58,7 @@ Workloads produce governance signal when they send OpenAI- or Anthropic-compatib
 |-----------|-----------|---------|
 | Injector Deployment | `koshi-system` | Mutating admission webhook — injects sidecar into labeled namespaces |
 | MutatingWebhookConfiguration | cluster-scoped | Intercepts pod CREATE in namespaces with `runtime.getkoshi.ai/inject: "true"` |
-| ConfigMap | `koshi-system` | Runtime config (mode, upstreams, default policy) |
+| ConfigMap | `koshi-system` | Runtime config for the control-plane deployment (mode, upstreams, default policy). Injected sidecars use the built-in default listener config, not this ConfigMap. |
 | TLS Secret | `koshi-system` | Webhook serving certificate (self-signed by default) |
 | NetworkPolicy | `koshi-system` | Restricts injector ingress to apiserver, sidecar egress to upstreams |
 
@@ -221,8 +233,11 @@ make docker
 
 ```bash
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
+  --version 0.2.11 \
   --namespace koshi-system --create-namespace
 ```
+
+> **Version pinning:** Always pin `--version` in production to avoid unexpected upgrades. The `appVersion` field in the chart metadata determines the default image tag when `image.tag` is unset.
 
 > **Docker Hub mirror:** If you prefer Docker Hub, add `--set image.repository=docker.io/koshihq/koshi-runtime`. The chart and configuration are identical.
 
@@ -255,17 +270,27 @@ Key Helm values:
 
 ## Enabling Enforcement
 
-When listener mode confirms your governance posture matches intent:
+Enforcement mode uses the same binary and Helm chart but changes how identity is resolved and how decisions are acted on.
 
-1. Update the ConfigMap: change `mode.type` from `"listener"` to `"enforcement"`
+**Injected sidecars:** Injected sidecars in workload namespaces use the built-in default listener config. They do not read the control-plane ConfigMap. The transition from listener to enforcement for injected sidecars is not yet a config change — it requires changes to how config is delivered to sidecars that are planned for a future release.
+
+**Control-plane deployment (standalone):** If you are running Koshi as a standalone deployment (not as an injected sidecar), you can enable enforcement by updating the ConfigMap:
+
+1. Change `mode.type` from `"listener"` to `"enforcement"`
 2. Define explicit workloads with `identity.mode: "header"` and `policy_refs`
-3. Restart the sidecar (rolling restart of your workloads)
+3. Restart the deployment
 
-The binary, image, and Helm chart are unchanged. Enforcement activates the same pipeline that listener mode already validated.
+Enforcement mode resolves identity from HTTP headers (`HeaderResolver`), not from pod metadata env vars (`PodResolver`). Workloads must send an identity header (default: `x-genops-workload-id`) on each request.
 
-## Policy Experimentation in Listener Mode
+See the [pre-enforcement checklist](docs/kubernetes-observability.md#pre-enforcement-checklist) before switching.
 
-Injected sidecars use the built-in default listener policy. With normal traffic, expect mostly `allow` outcomes. This baseline reveals which workloads generate AI API traffic and at what volume.
+## Posture Discovery in Listener Mode
+
+Listener mode is designed for discovering your governance posture. Injected sidecars evaluate every AI API request against the built-in default policy and emit shadow decisions. This reveals:
+
+- Which workloads generate AI API traffic and at what volume
+- Where the default policy boundary sits relative to real usage patterns
+- Whether workload identity is resolving correctly across namespaces
 
 **Interpreting shadow outcomes as coverage signals:**
 
@@ -277,16 +302,14 @@ Injected sidecars use the built-in default listener policy. With normal traffic,
 | `would_reject` + `identity_missing` | Sidecar couldn't resolve workload identity — check webhook injection |
 | `would_reject` + `policy_not_found` | No usable policy context — relevant when explicit workload mappings are configured without a default fallback |
 
-**Goal:** Answer questions like "which workloads produce AI API traffic?", "what does baseline governance posture look like?", and "where are we missing identity or policy coverage?"
-
-**Current scope:** Injected sidecars use the built-in default listener config. Custom per-workload policy experimentation for injected sidecars (custom budgets, guards, or tier configurations) is not yet supported in this release. The control-plane deployment supports full policy configuration via the chart ConfigMap, but that config does not propagate to injected sidecars.
+**What is not yet supported:** Custom per-workload policy for injected sidecars (custom budgets, guards, or tier configurations). The control-plane deployment supports full policy configuration via the chart ConfigMap, but that config does not propagate to injected sidecars. Sidecar-level policy customization is planned for a future release.
 
 ## Architecture
 
 - **One binary, two roles.** `KOSHI_ROLE=injector` starts the admission webhook server. Default starts the proxy.
 - **No Kubernetes API calls on the request path.** Pod identity is normalized at admission time by the webhook and read from env vars by the sidecar.
 - **Webhook `failurePolicy: Ignore`.** If the injector is down, pods still create — they just don't get the sidecar.
-- **Base-URL injection is safe.** `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` are only set on app containers if not already present.
+- **Base-URL injection is safe.** `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` are only set on app containers if not already present. See [What Traffic Produces Signal](#what-traffic-produces-signal) for implications when these vars are already defined.
 - **Reservation-first accounting.** Tokens are reserved before the request and reconciled with actual usage after the response.
 - **Fail open on infrastructure, fail closed on policy.** A panic triggers degraded pass-through mode. An unknown workload gets 403.
 

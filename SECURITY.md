@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| v1.x    | Yes       |
-| < v1.0  | No        |
+| 0.2.x (current) | Yes — design-partner support |
+| < 0.2.0          | No                           |
 
 ## Reporting a Vulnerability
 

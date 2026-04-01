@@ -9,7 +9,6 @@ Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys a
 ```bash
 # 1. Install into koshi-system
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
-  --version 1.0.0 \
   --namespace koshi-system --create-namespace
 
 # 2. Opt namespaces in — only labeled namespaces get the sidecar
@@ -26,6 +25,18 @@ kubectl logs -n my-namespace deploy/my-app -c koshi-listener --tail=100 | \
 kubectl port-forward -n my-namespace deploy/my-app 15080:15080
 curl http://localhost:15080/metrics | grep koshi_listener
 ```
+
+### What You Can Do on Day One
+
+- Install Koshi in listener mode — one Helm command, no config files required
+- Label any namespace and restart workloads to get sidecars injected
+- Collect structured JSON events from `koshi-listener` container logs
+- Scrape Prometheus metrics from `/metrics` on port `15080`
+- Observe real shadow decisions (`allow`, `would_throttle`, `would_kill`, `would_reject`) on live traffic without blocking anything
+
+### What Traffic Produces Signal
+
+Workloads produce governance signal when they send OpenAI- or Anthropic-compatible API requests. The webhook injects `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` env vars pointing at the sidecar. The sidecar evaluates the request against policy, emits a shadow event, and proxies the request to the real upstream transparently.
 
 ## What Gets Installed
 
@@ -80,7 +91,9 @@ In standalone (non-Kubernetes) mode, identity comes from an HTTP header (default
 
 ## Configuration
 
-Config is loaded from `KOSHI_CONFIG_PATH` (default: `/etc/koshi/config.yaml`).
+Config is loaded from `KOSHI_CONFIG_PATH` when set. If `KOSHI_CONFIG_PATH` is unset, the runtime uses a built-in default listener config.
+
+**Sidecar config behavior:** The control-plane deployment (main runtime and injector) uses the charted ConfigMap via `KOSHI_CONFIG_PATH`. Injected sidecars in workload pods use the built-in default listener config — no ConfigMap dependency in the workload namespace.
 
 ### Listener Mode (recommended starting point)
 
@@ -206,7 +219,6 @@ make docker
 
 ```bash
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
-  --version 1.0.0 \
   --namespace koshi-system --create-namespace
 ```
 
@@ -249,6 +261,24 @@ When listener mode confirms your governance posture matches intent:
 
 The binary, image, and Helm chart are unchanged. Enforcement activates the same pipeline that listener mode already validated.
 
+## Policy Experimentation in Listener Mode
+
+Injected sidecars use the built-in default listener policy. With normal traffic, expect mostly `allow` outcomes. This baseline reveals which workloads generate AI API traffic and at what volume.
+
+**Interpreting shadow outcomes as coverage signals:**
+
+| Shadow outcome | What it means |
+|---|---|
+| `allow` | Request passed all checks under the built-in policy |
+| `would_throttle` | Built-in budget or guard is tighter than this workload's traffic pattern |
+| `would_kill` | Severe budget pressure under the built-in policy |
+| `would_reject` + `identity_missing` | Sidecar couldn't resolve workload identity — check webhook injection |
+| `would_reject` + `policy_not_found` | No usable policy context — relevant when explicit workload mappings are configured without a default fallback |
+
+**Goal:** Answer questions like "which workloads produce AI API traffic?", "what does baseline governance posture look like?", and "where are we missing identity or policy coverage?"
+
+**Current scope:** Injected sidecars use the built-in default listener config. Custom per-workload policy experimentation for injected sidecars (custom budgets, guards, or tier configurations) is not yet supported in this release. The control-plane deployment supports full policy configuration via the chart ConfigMap, but that config does not propagate to injected sidecars.
+
 ## Architecture
 
 - **One binary, two roles.** `KOSHI_ROLE=injector` starts the admission webhook server. Default starts the proxy.
@@ -281,6 +311,7 @@ Existing pods with sidecars continue to function until restarted. Removing the n
 For setup, evaluation, contribution, and architectural context:
 
 **Start here**
+- [Design partner onboarding](docs/design-partner-onboarding.md) — install, verify, collect signal, interpret shadow outcomes
 - [Local demo walkthrough](demo/local/README.md) — kind cluster setup, synthetic traffic, event and metric validation
 - [Kubernetes observability guide](docs/kubernetes-observability.md) — structured events, Prometheus queries, Grafana patterns
 

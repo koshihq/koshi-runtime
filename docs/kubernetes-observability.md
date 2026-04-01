@@ -2,6 +2,8 @@
 
 This guide covers how to read your governance posture through Koshi Runtime's listener mode — structured events, Prometheus metrics, and latency analysis that show exactly where policies would intervene at the execution boundary.
 
+Koshi outputs structured JSON logs and Prometheus-format metrics. Any observability tool that ingests these formats works — Datadog, Splunk, Elastic, CloudWatch, Grafana stack, or any other log/metrics backend. No vendor-specific agent or plugin is required.
+
 ## Prerequisites
 
 - Koshi installed via Helm in listener mode (default)
@@ -85,6 +87,15 @@ If your Prometheus is configured for annotation-based discovery, sidecars are sc
 | `koshi_listener_tokens_total` | counter | `namespace`, `provider`, `phase` | Token count by phase (`reservation`, `actual`) |
 | `koshi_listener_latency_seconds` | histogram | (none) | Enforcement pipeline latency |
 | `koshi_emitter_dropped_total` | gauge | (none) | Events dropped due to backpressure |
+
+### First Saved Searches / First Dashboards
+
+Start with these to build your initial governance picture:
+
+- **Top shadow outcomes:** Group by `decision_shadow` — mostly `allow`, or seeing `would_throttle` / `would_kill` pressure?
+- **Top reason codes:** Group non-`allow` events by `reason_code` — what's driving shadow decisions?
+- **Namespaces with `would_throttle` or `would_kill`:** Filter `decision_shadow!="allow"` by `namespace`
+- **Token burn by namespace/provider:** Sum `koshi_listener_tokens_total{phase="reservation"}` by `namespace` and `provider`
 
 ### Sample Prometheus Queries
 
@@ -222,6 +233,16 @@ Use listener mode to validate policy shape, guard pressure, and local runtime ov
 ## From Posture Discovery to Enforcement
 
 Listener mode reveals your governance posture — the set of decisions the enforcement pipeline would make on live traffic. Use this section to validate that posture before enabling enforcement.
+
+### Shadow Outcome Quick Reference
+
+| Shadow outcome | What it tells a policy designer |
+|---|---|
+| `allow` | Baseline posture is acceptable for this traffic |
+| `would_throttle` | Budget or guard is too tight for this traffic pattern |
+| `would_kill` | Severe budget pressure — review tier configuration |
+| `would_reject` + `identity_missing` | Identity env vars not injected — check webhook |
+| `would_reject` + `policy_not_found` | No usable policy — add `default_policy` or workload mapping |
 
 ### Interpreting Shadow Decisions
 

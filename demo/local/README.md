@@ -2,6 +2,8 @@
 
 This demo creates a local Kubernetes cluster with kind, installs Koshi in listener mode, deploys a mock upstream and sample workload, sends synthetic traffic, and validates structured events and metrics.
 
+> **For partner onboarding on a real cluster**, see [Design Partner Onboarding](../../docs/design-partner-onboarding.md). This demo is for local development and validation only.
+
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/)
@@ -102,29 +104,16 @@ curl -s http://localhost:15080/status | jq .
 
 ## Using Released Artifacts
 
-Instead of building locally, you can use the published image and chart:
+The local demo above uses a locally built image and a mock upstream. To use published artifacts on a real cluster with real AI API providers:
 
 ```bash
-kind create cluster --name koshi-demo
-
-# Install from OCI chart with GHCR image (chart version = X.Y.Z, image tag = vX.Y.Z)
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
-  --version 1.0.0 \
-  --namespace koshi-system --create-namespace \
-  -f values-released.yaml
-
-# Then follow steps 3–8 above
+  --namespace koshi-system --create-namespace
 ```
 
-Create a `values-released.yaml` that overrides the mock upstream URL but uses the default published image:
+Injected sidecars use the built-in default listener config, which routes traffic to `https://api.openai.com` and `https://api.anthropic.com`. The mock-upstream flow in this demo is for local development only — it is not part of the released-artifact validation path.
 
-```yaml
-mode: listener
-config:
-  upstreams:
-    openai: http://mock-upstream.default.svc.cluster.local:8080
-    anthropic: http://mock-upstream.default.svc.cluster.local:8080
-```
+For partner onboarding on a real cluster, see [Design Partner Onboarding](../../docs/design-partner-onboarding.md).
 
 ## Cleanup
 

@@ -1,4 +1,4 @@
-# Design Partner Onboarding
+# Koshi Onboarding
 
 This guide walks through installing Koshi in listener mode, verifying the sidecar is active, collecting governance signal, and interpreting shadow outcomes — all without blocking any traffic.
 
@@ -78,7 +78,7 @@ Shadow outcomes like `would_throttle` indicate the built-in budget or guard is t
 
 ## Current Policy Experimentation Scope
 
-The built-in default policy provides a fixed baseline for posture discovery. This is the intended starting point for design partner engagements.
+The built-in default policy provides a fixed baseline for posture discovery. This is the intended starting point for new deployments.
 
 Custom per-workload policy experimentation for injected sidecars (custom budgets, guards, or tier configurations) is not yet supported in this release. The control-plane deployment supports full policy configuration via the chart ConfigMap, but that config does not propagate to injected sidecars. Richer sidecar-level policy customization is planned for a future release.
 

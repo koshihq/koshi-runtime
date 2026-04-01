@@ -2,7 +2,7 @@
 
 This demo creates a local Kubernetes cluster with kind, installs Koshi in listener mode, deploys a mock upstream and sample workload, sends synthetic traffic, and validates structured events and metrics.
 
-> **For partner onboarding on a real cluster**, see [Design Partner Onboarding](../../docs/design-partner-onboarding.md). This demo is for local development and validation only.
+> **For partner onboarding on a real cluster**, see [Koshi Onboarding](../../docs/onboarding.md). This demo is for local development and validation only.
 
 ## Prerequisites
 
@@ -113,7 +113,7 @@ helm install koshi oci://ghcr.io/koshihq/charts/koshi \
 
 Injected sidecars use the built-in default listener config, which routes traffic to `https://api.openai.com` and `https://api.anthropic.com`. The mock-upstream flow in this demo is for local development only — it is not part of the released-artifact validation path.
 
-For partner onboarding on a real cluster, see [Design Partner Onboarding](../../docs/design-partner-onboarding.md).
+For partner onboarding on a real cluster, see [Koshi Onboarding](../../docs/onboarding.md).
 
 ## Cleanup
 

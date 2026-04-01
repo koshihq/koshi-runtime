@@ -311,7 +311,7 @@ Existing pods with sidecars continue to function until restarted. Removing the n
 For setup, evaluation, contribution, and architectural context:
 
 **Start here**
-- [Design partner onboarding](docs/design-partner-onboarding.md) — install, verify, collect signal, interpret shadow outcomes
+- [Koshi onboarding](docs/onboarding.md) — install, verify, collect signal, interpret shadow outcomes
 - [Local demo walkthrough](demo/local/README.md) — kind cluster setup, synthetic traffic, event and metric validation
 - [Kubernetes observability guide](docs/kubernetes-observability.md) — structured events, Prometheus queries, Grafana patterns
 

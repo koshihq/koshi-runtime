@@ -11,7 +11,7 @@ image:
 
 service:
   type: ClusterIP
-  port: 15080
+  port: 15080  # NOT YET WIRED — port is derived from mode: 15080 (listener) or 8080 (enforcement).
 
 resources:
   limits:
@@ -38,7 +38,7 @@ securityContext:
 livenessProbe:
   httpGet:
     path: /healthz
-    port: 15080
+    port: 15080  # NOT YET WIRED — port is derived from mode (same as service port).
   initialDelaySeconds: 5
   periodSeconds: 10
   failureThreshold: 3
@@ -46,7 +46,7 @@ livenessProbe:
 readinessProbe:
   httpGet:
     path: /readyz
-    port: 15080
+    port: 15080  # NOT YET WIRED — port is derived from mode (same as service port).
   initialDelaySeconds: 2
   periodSeconds: 5
   failureThreshold: 1
@@ -79,6 +79,7 @@ webhook:
 
 sidecar:
   port: 15080
+  # Resources applied to injected sidecar containers.
   resources:
     limits:
       cpu: 200m
@@ -95,7 +96,32 @@ namespaceSelector:
 networkPolicy:
   enabled: true
 
-# Prometheus scrape annotations applied to injected workload pods.
+# Runtime configuration rendered into the control-plane ConfigMap.
+# Injected sidecars use the built-in default listener config and are NOT
+# affected by these values.
+#
+# These values are used in listener mode only. Enforcement-mode config
+# is currently hardcoded in the ConfigMap template.
+config:
+  upstreams:
+    openai: "https://api.openai.com"
+    anthropic: "https://api.anthropic.com"
+  default_policy:
+    id: "_listener_default"
+    budgets:
+      rolling_tokens:
+        window_seconds: 3600
+        limit_tokens: 1000000
+        burst_tokens: 0
+    guards:
+      max_tokens_per_request: 32768
+    decision_tiers:
+      tier1_auto:
+        action: "throttle"
+
+# NOT YET WIRED — Prometheus scrape annotations are applied to injected pods,
+# but the annotation keys are currently hardcoded in the injector binary.
+# These values are retained for forward compatibility.
 scrapeAnnotations:
   enabled: true
   keys:

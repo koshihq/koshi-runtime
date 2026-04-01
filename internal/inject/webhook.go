@@ -14,9 +14,11 @@ import (
 
 // WebhookConfig holds configuration for the sidecar injector.
 type WebhookConfig struct {
-	SidecarImage string
-	SidecarPort  int
-	ConfigPath   string // ConfigMap mount path, e.g. /etc/koshi
+	SidecarImage      string
+	SidecarPullPolicy corev1.PullPolicy
+	SidecarPort       int
+	SidecarResources  corev1.ResourceRequirements
+	ConfigPath        string            // ConfigMap mount path, e.g. /etc/koshi
 	ScrapeAnnotations map[string]string // key→value for prometheus annotations
 }
 
@@ -98,12 +100,15 @@ func buildPatches(cfg WebhookConfig, pod *corev1.Pod, namespace string) []JSONPa
 
 	// Build sidecar container.
 	sidecar := corev1.Container{
-		Name:  "koshi-listener",
-		Image: cfg.SidecarImage,
+		Name:            "koshi-listener",
+		Image:           cfg.SidecarImage,
+		ImagePullPolicy: cfg.SidecarPullPolicy,
+		Resources:       cfg.SidecarResources,
 		Ports: []corev1.ContainerPort{
 			{ContainerPort: int32(cfg.SidecarPort), Protocol: corev1.ProtocolTCP},
 		},
 		Env: []corev1.EnvVar{
+			{Name: "KOSHI_LISTEN_ADDR", Value: fmt.Sprintf(":%d", cfg.SidecarPort)},
 			{Name: "KOSHI_POD_NAMESPACE", Value: namespace},
 			{Name: "KOSHI_WORKLOAD_KIND", Value: kind},
 			{Name: "KOSHI_WORKLOAD_NAME", Value: name},

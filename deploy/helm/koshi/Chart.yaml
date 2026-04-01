@@ -2,5 +2,5 @@ apiVersion: v2
 name: koshi
 description: Listener-first AI workload governance runtime for Kubernetes
 type: application
-version: 0.2.11
-appVersion: "v0.2.11"
+version: 0.2.12
+appVersion: "v0.2.12"

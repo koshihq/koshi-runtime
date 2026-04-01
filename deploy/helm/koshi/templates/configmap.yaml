@@ -11,22 +11,25 @@ data:
     listen_addr: ":15080"
 
     upstreams:
-      openai: "https://api.openai.com"
-      anthropic: "https://api.anthropic.com"
+      {{- range $provider, $url := .Values.config.upstreams }}
+      {{ $provider }}: {{ $url | quote }}
+      {{- end }}
 
     default_policy:
-      id: "_listener_default"
+      id: {{ .Values.config.default_policy.id | quote }}
       budgets:
         rolling_tokens:
-          window_seconds: 3600
-          limit_tokens: 1000000
-          burst_tokens: 0
+          window_seconds: {{ .Values.config.default_policy.budgets.rolling_tokens.window_seconds }}
+          limit_tokens: {{ .Values.config.default_policy.budgets.rolling_tokens.limit_tokens }}
+          burst_tokens: {{ .Values.config.default_policy.budgets.rolling_tokens.burst_tokens }}
       guards:
-        max_tokens_per_request: 32768
+        max_tokens_per_request: {{ .Values.config.default_policy.guards.max_tokens_per_request }}
       decision_tiers:
         tier1_auto:
-          action: "throttle"
+          action: {{ .Values.config.default_policy.decision_tiers.tier1_auto.action | quote }}
     {{- else }}
+    # Enforcement-mode config is not yet templated from values.
+    # Edit this section directly or override via a custom ConfigMap.
     listen_addr: ":8080"
 
     upstreams:

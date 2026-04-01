@@ -196,10 +196,7 @@ func main() {
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.Handle("/", handler)
 
-	listenAddr := cfg.ListenAddr
-	if listenAddr == "" {
-		listenAddr = ":8080"
-	}
+	listenAddr := resolveListenAddr(cfg.ListenAddr, os.Getenv("KOSHI_LISTEN_ADDR"))
 
 	server := &http.Server{
 		Addr:              listenAddr,
@@ -237,4 +234,16 @@ func main() {
 
 	emitter.Close()
 	logger.Info("shutdown complete")
+}
+
+// resolveListenAddr picks the listen address with precedence:
+// env override > config value > default :8080.
+func resolveListenAddr(cfgAddr, envOverride string) string {
+	if envOverride != "" {
+		return envOverride
+	}
+	if cfgAddr != "" {
+		return cfgAddr
+	}
+	return ":8080"
 }

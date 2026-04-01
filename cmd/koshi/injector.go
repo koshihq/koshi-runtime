@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/koshihq/koshi-runtime/internal/inject"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func runInjector(logger *slog.Logger) {
@@ -28,11 +31,30 @@ func runInjector(logger *slog.Logger) {
 	}
 
 	sidecarPort := 15080
+	if portStr := os.Getenv("KOSHI_SIDECAR_PORT"); portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+			sidecarPort = p
+		}
+	}
+
+	sidecarPullPolicy := corev1.PullIfNotPresent
+	if pp := os.Getenv("KOSHI_SIDECAR_PULL_POLICY"); pp != "" {
+		sidecarPullPolicy = corev1.PullPolicy(pp)
+	}
+
+	var sidecarResources corev1.ResourceRequirements
+	if resJSON := os.Getenv("KOSHI_SIDECAR_RESOURCES"); resJSON != "" {
+		if err := json.Unmarshal([]byte(resJSON), &sidecarResources); err != nil {
+			logger.Warn("failed to parse KOSHI_SIDECAR_RESOURCES, using no limits", "error", err)
+		}
+	}
 
 	cfg := inject.WebhookConfig{
-		SidecarImage: sidecarImage,
-		SidecarPort:  sidecarPort,
-		ConfigPath:   "/etc/koshi",
+		SidecarImage:      sidecarImage,
+		SidecarPullPolicy: sidecarPullPolicy,
+		SidecarPort:       sidecarPort,
+		SidecarResources:  sidecarResources,
+		ConfigPath:       "/etc/koshi",
 		ScrapeAnnotations: map[string]string{
 			"prometheus.io/scrape": "true",
 			"prometheus.io/port":   "15080",

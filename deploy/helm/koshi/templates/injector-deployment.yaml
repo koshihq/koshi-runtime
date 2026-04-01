@@ -40,8 +40,12 @@ spec:
               value: /etc/koshi-tls/tls.key
             - name: KOSHI_INJECT_IMAGE
               value: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+            - name: KOSHI_SIDECAR_PULL_POLICY
+              value: "{{ .Values.image.pullPolicy }}"
             - name: KOSHI_SIDECAR_PORT
               value: "{{ .Values.sidecar.port }}"
+            - name: KOSHI_SIDECAR_RESOURCES
+              value: {{ .Values.sidecar.resources | toJson | quote }}
           livenessProbe:
             httpGet:
               path: /healthz

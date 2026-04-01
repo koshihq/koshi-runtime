@@ -287,6 +287,110 @@ func TestWebhook_NilEnv(t *testing.T) {
 	}
 }
 
+func TestWebhook_SidecarPullPolicy(t *testing.T) {
+	cfg := testConfig()
+	cfg.SidecarPullPolicy = corev1.PullIfNotPresent
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-pod"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Name: "app", Image: "myapp:latest", Env: []corev1.EnvVar{}},
+			},
+		},
+	}
+
+	resp, err := HandleMutate(cfg, makeReview(pod, "default"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			if container.ImagePullPolicy != corev1.PullIfNotPresent {
+				t.Errorf("expected imagePullPolicy IfNotPresent, got %q", container.ImagePullPolicy)
+			}
+			return
+		}
+	}
+	t.Error("expected sidecar container patch")
+}
+
+func TestWebhook_ListenAddrEnv(t *testing.T) {
+	cfg := testConfig()
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-pod"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Name: "app", Image: "myapp:latest", Env: []corev1.EnvVar{}},
+			},
+		},
+	}
+
+	resp, err := HandleMutate(cfg, makeReview(pod, "default"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			checkEnv(t, container.Env, "KOSHI_LISTEN_ADDR", ":15080")
+			return
+		}
+	}
+	t.Error("expected sidecar container patch")
+}
+
+func TestWebhook_CustomPortListenAddr(t *testing.T) {
+	cfg := testConfig()
+	cfg.SidecarPort = 16080
+	cfg.ScrapeAnnotations["prometheus.io/port"] = "16080"
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-pod"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Name: "app", Image: "myapp:latest", Env: []corev1.EnvVar{}},
+			},
+		},
+	}
+
+	resp, err := HandleMutate(cfg, makeReview(pod, "default"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			checkEnv(t, container.Env, "KOSHI_LISTEN_ADDR", ":16080")
+			if len(container.Ports) == 0 || container.Ports[0].ContainerPort != 16080 {
+				t.Errorf("expected containerPort 16080, got %v", container.Ports)
+			}
+			return
+		}
+	}
+	t.Error("expected sidecar container patch")
+}
+
 func checkEnv(t *testing.T, envs []corev1.EnvVar, name, expectedValue string) {
 	t.Helper()
 	for _, e := range envs {

@@ -4,6 +4,8 @@ Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys a
 
 **Discover your governance posture before enforcing it.** Koshi ships in **listener mode** by default: the full enforcement pipeline — identity resolution, policy lookup, guard evaluation, budget accounting — executes on every request, but no traffic is blocked. Shadow decisions (`would_reject`, `would_throttle`, `would_kill`) reveal exactly where your policies would intervene. When the posture matches your intent, enabling enforcement is a config change — same binary, same pipeline, same metrics.
 
+**No repo clone required.** Install Koshi directly from the published OCI Helm chart and container image.
+
 ## Quick Start: Kubernetes (Listener Mode)
 
 ```bash
@@ -28,7 +30,7 @@ curl http://localhost:15080/metrics | grep koshi_listener
 
 ### What You Can Do on Day One
 
-- Install Koshi in listener mode — one Helm command, no config files required
+- Install Koshi in listener mode — one Helm command, no repo clone or config files required
 - Label any namespace and restart workloads to get sidecars injected
 - Collect structured JSON events from `koshi-listener` container logs
 - Scrape Prometheus metrics from `/metrics` on port `15080`

@@ -2,6 +2,8 @@
 
 This guide walks through installing Koshi in listener mode, verifying the sidecar is active, collecting governance signal, and interpreting shadow outcomes — all without blocking any traffic.
 
+This flow uses published release artifacts. No local repo checkout is required.
+
 ## Install
 
 ```bash
@@ -15,6 +17,8 @@ kubectl label namespace <namespace> runtime.getkoshi.ai/inject=true
 # Restart workloads to pick up the sidecar
 kubectl rollout restart deployment -n <namespace>
 ```
+
+> The default image is `ghcr.io/koshihq/koshi-runtime`. To use the Docker Hub mirror, add `--set image.repository=docker.io/koshihq/koshi-runtime`.
 
 ## Verify
 

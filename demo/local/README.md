@@ -2,7 +2,7 @@
 
 This demo creates a local Kubernetes cluster with kind, installs Koshi in listener mode, deploys a mock upstream and sample workload, sends synthetic traffic, and validates structured events and metrics.
 
-> **For partner onboarding on a real cluster**, see [Koshi Onboarding](../../docs/onboarding.md). This demo is for local development and validation only.
+> **This demo is for local development and validation only.** It requires a repo checkout, a local Docker build, and a kind cluster. To install Koshi on a real cluster using published artifacts, see [Koshi Onboarding](../../docs/onboarding.md).
 
 ## Prerequisites
 

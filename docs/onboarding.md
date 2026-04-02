@@ -110,6 +110,38 @@ Start with these queries to build your initial governance picture:
 
 See [Kubernetes Observability Guide](kubernetes-observability.md) for detailed Prometheus queries, Grafana dashboard patterns, and Loki log queries.
 
+## From Listener Audit to Standalone Enforcement
+
+Moving from sidecar listener audits to live enforcement is a **deployment-model handoff**. Injected sidecars use the built-in default listener config and do not read the chart ConfigMap, so enforcement requires deploying Koshi as a standalone service.
+
+### What your audit tells you
+
+Your listener audit produces the raw inputs for enforcement policy:
+
+- **Workload inventory:** which `namespace` / `workload_kind` / `workload_name` tuples appear in events
+- **Token pressure:** `koshi_listener_tokens_total` by namespace and provider shows consumption patterns
+- **Policy boundary fit:** shadow outcomes (`would_throttle`, `would_kill`) show where the default policy is tighter than real usage
+- **Identity coverage:** `would_reject` + `identity_missing` events show where identity injection failed
+
+### Translating audit findings into enforcement config
+
+1. **Map observed workloads to `workloads` entries.** Each workload from your audit becomes an explicit entry with an `id`, `identity.mode: "header"`, and `policy_refs`.
+2. **Choose your identity header.** Standalone enforcement uses `HeaderResolver` — callers must send a workload identity header (default: `x-genops-workload-id`) on each request. Your API gateway or application code is responsible for setting this.
+3. **Define named `policies`.** Use the token pressure and shadow outcomes from your audit to set appropriate `limit_tokens`, `window_seconds`, `max_tokens_per_request`, and tier actions.
+4. **Route traffic through the standalone deployment.** Point application HTTP clients at the Koshi service instead of directly at AI provider APIs.
+
+See the [README enforcement mode config reference](../README.md#enforcement-mode) for the full config shape.
+
+### Operational considerations
+
+- Standalone enforcement introduces a centralized traffic path. The default chart runs a single replica — evaluate your availability requirements.
+- Scaling replicas improves availability, but budget state is per-replica in v1 (no cross-replica coordination).
+- Review the [pre-enforcement checklist](kubernetes-observability.md#pre-enforcement-checklist) before activating.
+
+### What is planned but not available today
+
+Sidecar config delivery and in-place sidecar enforcement are planned for the open runtime. Until then, the path from audit to enforcement is a deployment-model handoff, not a sidecar config flip.
+
 ## Next Steps
 
 - Review the [pre-enforcement checklist](kubernetes-observability.md#pre-enforcement-checklist) when you're ready to move from posture discovery to enforcement

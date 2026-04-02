@@ -268,21 +268,54 @@ Key Helm values:
 | `/status` | GET | Runtime diagnostics and budget state (JSON) |
 | `/metrics` | GET | Prometheus metrics |
 
-## Enabling Enforcement
+## Deployment Models
 
-Enforcement mode uses the same binary and Helm chart but changes how identity is resolved and how decisions are acted on.
+Koshi supports two deployment models today. They serve different purposes and have different operational characteristics.
 
-**Injected sidecars:** Injected sidecars in workload namespaces use the built-in default listener config. They do not read the control-plane ConfigMap. The transition from listener to enforcement for injected sidecars is not yet a config change — it requires changes to how config is delivered to sidecars that are planned for a future release.
+| | Injected sidecar (listener) | Standalone deployment (enforcement) |
+|---|---|---|
+| **Purpose** | Low-risk governance audit and posture discovery | Centralized runtime — current path to live enforcement |
+| **Identity** | Pod metadata (injected by webhook at admission) | HTTP header (`x-genops-workload-id` default) |
+| **Config source** | Built-in default listener config | File-based runtime config (`KOSHI_CONFIG_PATH` / ConfigMap) |
+| **Policy** | Single built-in default policy | Named policies with per-workload binding |
+| **Traffic effect** | None — shadow decisions only, all traffic proxied | Active — 403 / 429 / 503 on policy violations |
+| **Blast radius** | Per pod (each sidecar is independent) | Centralized (all routed traffic shares one deployment) |
+| **Availability** | Sidecar lifecycle follows the workload pod | Operator-managed; default chart runs a single replica |
+| **Metrics** | `koshi_listener_*` series | `koshi_enforcement_*` series |
 
-**Control-plane deployment (standalone):** If you are running Koshi as a standalone deployment (not as an injected sidecar), you can enable enforcement by updating the ConfigMap:
+### Current Adoption Path
 
-1. Change `mode.type` from `"listener"` to `"enforcement"`
-2. Define explicit workloads with `identity.mode: "header"` and `policy_refs`
-3. Restart the deployment
+1. **Audit** — install Koshi in listener mode, inject sidecars, collect shadow decisions on live traffic. This reveals which workloads generate AI API traffic, what their token patterns look like, and where the default policy boundary sits.
 
-Enforcement mode resolves identity from HTTP headers (`HeaderResolver`), not from pod metadata env vars (`PodResolver`). Workloads must send an identity header (default: `x-genops-workload-id`) on each request.
+2. **Validate** — use shadow outcomes, identity coverage, and token pressure to finalize policy intent. See [Posture Discovery](#posture-discovery-in-listener-mode) and the [pre-enforcement checklist](docs/kubernetes-observability.md#pre-enforcement-checklist).
 
-See the [pre-enforcement checklist](docs/kubernetes-observability.md#pre-enforcement-checklist) before switching.
+3. **Enforce** — operationalize live blocking through a standalone Koshi deployment. This is a **deployment-model handoff**, not an in-place sidecar config flip. See [From Audit to Enforcement](#from-audit-to-enforcement) and the [onboarding guide](docs/onboarding.md#from-listener-audit-to-standalone-enforcement) for concrete steps.
+
+**Why the handoff?** Injected sidecars use the built-in default listener config and do not read the chart ConfigMap. Sidecar config delivery and in-place sidecar enforcement are planned for a future release. Until then, moving from audit to enforcement means deploying Koshi as a standalone service and routing application traffic through it.
+
+### Standalone Availability Considerations
+
+Standalone enforcement introduces a centralized traffic path that differs from sidecar listener mode:
+
+- The default chart runs a single runtime replica. Operators should evaluate replica count, resource allocation, and disruption budget for their availability requirements.
+- Scaling replicas improves availability, but does **not** provide globally shared budget state or cross-replica coordination in v1. Each replica maintains independent in-memory accounting.
+- Application traffic must be routed to the standalone deployment (e.g., via a Kubernetes Service), and callers must send the configured workload identity header.
+
+These are standard operational concerns — not blockers — but they should be considered as part of the enforcement rollout design.
+
+## From Audit to Enforcement
+
+Enforcement mode uses the same binary and Helm chart but changes how identity is resolved and how decisions are acted on. Moving from sidecar listener audits to standalone enforcement involves translating audit findings into enforcement config:
+
+1. **Observed workloads become explicit `workloads` entries.** Each workload that appeared in your listener audit gets an `id`, `identity.mode: "header"`, and `policy_refs`.
+2. **Choose the identity header key.** Standalone enforcement resolves identity from an HTTP header (`HeaderResolver`), not pod metadata. The default key is `x-genops-workload-id`. Your application or API gateway must send this header on each request.
+3. **Convert the validated listener baseline into named `policies`.** Shadow outcomes from your audit tell you what budget limits, guards, and tier configurations are appropriate.
+4. **Attach `policy_refs` to workloads.** Bind each workload to one or more named policies.
+5. **Deploy Koshi as a standalone service** and route application traffic through it.
+
+This is currently a **manual policy operationalization step**, not an automatic migration.
+
+See the [enforcement mode config reference](#enforcement-mode) and the [pre-enforcement checklist](docs/kubernetes-observability.md#pre-enforcement-checklist) before switching.
 
 ## Posture Discovery in Listener Mode
 

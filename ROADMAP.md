@@ -22,8 +22,22 @@ Koshi Runtime is a Kubernetes-native runtime substrate that sits at the workload
 - **Enforcement mode** — same binary, activated by config. Currently available for standalone deployments; injected-sidecar enforcement is planned. Identity via HTTP header, per-workload policy binding, tiered decisions (allow, throttle, kill).
 - **Design documentation** — formal specifications for [deterministic accounting invariants](docs/design/koshi-v1-deterministic-accounting-invariants.md), [enforcement boundary](docs/design/koshi-v1-enforcement-boundary.md), [operator trust guarantees](docs/design/koshi-v1-operator-trust-guarantees.md), and [why Koshi exists](docs/design/koshi-v1-why-koshi-exists.md).
 
+## Current Product Shape
+
+| Capability | Sidecar (injected) | Standalone deployment |
+|---|---|---|
+| Listener / posture discovery | **Available** — primary adoption path | Available |
+| Configurable policy | Built-in default only | Full file-based runtime config via `KOSHI_CONFIG_PATH` / ConfigMap |
+| Enforcement (live blocking) | **Planned** | **Available** |
+| Config delivery from chart | Not yet — sidecars use built-in defaults | Via `KOSHI_CONFIG_PATH` |
+
+**Today:** sidecar listener audits are the low-risk entry point for governance posture discovery. Standalone deployment is the current path to live enforcement. Moving from audit to enforcement is a deployment-model handoff — see the [README](README.md#from-audit-to-enforcement).
+
+**Planned:** sidecar config delivery and sidecar-level enforcement in the open runtime, eliminating the handoff.
+
 ## Next
 
+- Sidecar config delivery (enabling per-workload policy and in-place sidecar enforcement)
 - Richer provider coverage and policy expressiveness
 - Operator-facing Kubernetes integration improvements
 - Expanded documentation and evaluation guides
@@ -42,9 +56,12 @@ Koshi Runtime is a Kubernetes-native runtime substrate that sits at the workload
 These are excluded by design, not deferred. They define the boundary between the open runtime and commercial layers:
 
 - Hosted control plane or fleet governance coordination
+- Advanced policy experimentation, advisory/candidate evaluation, and centralized rollout safety
 - Compliance automation layers
 - TLS interception or invasive traffic capture
 - Design-partner-specific orchestration
+
+Basic sidecar enforcement and config delivery are intended as **open runtime** capabilities. Commercial value sits above that line in fleet-wide operations, advanced policy experimentation, and centralized governance coordination.
 
 ## Principles
 

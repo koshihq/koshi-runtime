@@ -8,7 +8,7 @@ Koshi Runtime is a Kubernetes-native runtime substrate that sits at the workload
 
 - **Listener-first adoption.** Discover your governance posture at the execution boundary before enforcing it. The full enforcement pipeline runs on every request in listener mode, emitting structured events and metrics that reveal exactly where policies would intervene — without blocking traffic.
 - **Structured governance signals.** Every request produces a machine-readable decision with a stable reason code — identity resolution, policy lookup, per-request guards, rolling budget accounting, and tiered enforcement.
-- **Config-driven mode switching.** The same binary and image supports both listener and enforcement modes. For standalone deployments, moving from observation to enforcement is a config change. For injected sidecars, enforcement and config delivery to sidecars are planned for a future release.
+- **Config-driven mode switching.** The same binary and image supports both listener and enforcement modes. For standalone deployments, moving from observation to enforcement is a config change. For injected sidecars, enforcement with built-in policy selection is available via pod annotations; arbitrary custom policy is available via namespace-local ConfigMap delivery.
 - **Auditable, reversible, bounded behavior.** Reservation-first token accounting with reconciliation. Deterministic enforcement decisions. Safe defaults that fail open on infrastructure and fail closed on policy.
 
 ## Available Now
@@ -19,7 +19,8 @@ Koshi Runtime is a Kubernetes-native runtime substrate that sits at the workload
 - **Reservation-first token accounting** — budget pre-deducted before proxying, reconciled with actual usage after response. Rolling window with optional burst. Budget floor at zero.
 - **Stable reason codes** — machine-readable codes on all decisions and error responses: `identity_missing`, `policy_not_found`, `guard_max_tokens`, `budget_exhausted_throttle`, `budget_exhausted_kill`, and others.
 - **Helm chart with safe defaults** — NetworkPolicy, PodDisruptionBudget, security context (read-only root, non-root, drop all capabilities), self-signed webhook cert generation.
-- **Enforcement mode** — same binary, activated by config. Currently available for standalone deployments; injected-sidecar enforcement is planned. Identity via HTTP header, per-workload policy binding, tiered decisions (allow, throttle, kill).
+- **Enforcement mode** — same binary, activated by config. Available for standalone deployments (header-based identity, per-workload policy binding) and injected sidecars (pod-derived identity, built-in policy catalog via `runtime.getkoshi.ai/mode` and `runtime.getkoshi.ai/policy` annotations). Tiered decisions: allow, throttle, kill.
+- **Sidecar config delivery** — namespace-local ConfigMap delivery for arbitrary custom sidecar policy. Operators create a ConfigMap with custom policies in the workload namespace and reference it via `runtime.getkoshi.ai/configmap` and `runtime.getkoshi.ai/policy` pod annotations. Works in both listener and enforcement modes.
 - **Design documentation** — formal specifications for [deterministic accounting invariants](docs/design/koshi-v1-deterministic-accounting-invariants.md), [enforcement boundary](docs/design/koshi-v1-enforcement-boundary.md), [operator trust guarantees](docs/design/koshi-v1-operator-trust-guarantees.md), and [why Koshi exists](docs/design/koshi-v1-why-koshi-exists.md).
 
 ## Current Product Shape
@@ -27,17 +28,14 @@ Koshi Runtime is a Kubernetes-native runtime substrate that sits at the workload
 | Capability | Sidecar (injected) | Standalone deployment |
 |---|---|---|
 | Listener / posture discovery | **Available** — primary adoption path | Available |
-| Configurable policy | Built-in default only | Full file-based runtime config via `KOSHI_CONFIG_PATH` / ConfigMap |
-| Enforcement (live blocking) | **Planned** | **Available** |
-| Config delivery from chart | Not yet — sidecars use built-in defaults | Via `KOSHI_CONFIG_PATH` |
+| Configurable policy | Built-in policy catalog via annotation; arbitrary custom policy via namespace-local ConfigMap (`runtime.getkoshi.ai/configmap`) | Full file-based runtime config via `KOSHI_CONFIG_PATH` / ConfigMap |
+| Enforcement (live blocking) | **Available** — via `runtime.getkoshi.ai/mode` annotation with built-in policies | **Available** |
+| Config delivery | **Available** — namespace-local ConfigMap via `runtime.getkoshi.ai/configmap` annotation | Via `KOSHI_CONFIG_PATH` |
 
-**Today:** sidecar listener audits are the low-risk entry point for governance posture discovery. Standalone deployment is the current path to live enforcement. Moving from audit to enforcement is a deployment-model handoff — see the [README](README.md#from-audit-to-enforcement).
-
-**Planned:** sidecar config delivery and sidecar-level enforcement in the open runtime, eliminating the handoff.
+**Today:** sidecar listener audits are the low-risk entry point for governance posture discovery. Sidecar enforcement with built-in policy selection is available as an in-place enforcement path. Namespace-local ConfigMap delivery enables arbitrary custom sidecar policy without switching to standalone. Standalone deployment provides centralized enforcement with full config. See the [README](README.md#from-audit-to-enforcement).
 
 ## Next
 
-- Sidecar config delivery (enabling per-workload policy and in-place sidecar enforcement)
 - Richer provider coverage and policy expressiveness
 - Operator-facing Kubernetes integration improvements
 - Expanded documentation and evaluation guides
@@ -61,7 +59,7 @@ These are excluded by design, not deferred. They define the boundary between the
 - TLS interception or invasive traffic capture
 - Design-partner-specific orchestration
 
-Basic sidecar enforcement and config delivery are intended as **open runtime** capabilities. Commercial value sits above that line in fleet-wide operations, advanced policy experimentation, and centralized governance coordination.
+Sidecar enforcement and sidecar config delivery are **open runtime** capabilities. Commercial value sits above that line in fleet-wide operations, advanced policy experimentation, and centralized governance coordination.
 
 ## Principles
 

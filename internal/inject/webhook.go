@@ -116,11 +116,55 @@ func buildPatches(cfg WebhookConfig, pod *corev1.Pod, namespace string) []JSONPa
 		},
 	}
 
+	// Inject enforcement mode if annotated.
+	if modeAnnotation, ok := pod.Annotations["runtime.getkoshi.ai/mode"]; ok && modeAnnotation == "enforcement" {
+		sidecar.Env = append(sidecar.Env, corev1.EnvVar{
+			Name:  "KOSHI_MODE",
+			Value: "enforcement",
+		})
+	}
+
 	// Add policy override if annotated.
 	if policyOverride, ok := pod.Annotations["runtime.getkoshi.ai/policy"]; ok && policyOverride != "" {
 		sidecar.Env = append(sidecar.Env, corev1.EnvVar{
 			Name:  "KOSHI_POLICY_OVERRIDE",
 			Value: policyOverride,
+		})
+	}
+
+	// Mount namespace-local ConfigMap if annotated.
+	if configmapName, ok := pod.Annotations["runtime.getkoshi.ai/configmap"]; ok && configmapName != "" {
+		sidecar.Env = append(sidecar.Env, corev1.EnvVar{
+			Name:  "KOSHI_CONFIG_PATH",
+			Value: "/etc/koshi-sidecar/config.yaml",
+		})
+		sidecar.VolumeMounts = []corev1.VolumeMount{{
+			Name:      "koshi-sidecar-config",
+			MountPath: "/etc/koshi-sidecar",
+			ReadOnly:  true,
+		}}
+
+		// Init volumes array if pod has none (JSON patch requires array to exist before appending).
+		if len(pod.Spec.Volumes) == 0 {
+			patches = append(patches, JSONPatchOp{
+				Op:    "add",
+				Path:  "/spec/volumes",
+				Value: []corev1.Volume{},
+			})
+		}
+		patches = append(patches, JSONPatchOp{
+			Op:   "add",
+			Path: "/spec/volumes/-",
+			Value: corev1.Volume{
+				Name: "koshi-sidecar-config",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: configmapName,
+						},
+					},
+				},
+			},
 		})
 	}
 

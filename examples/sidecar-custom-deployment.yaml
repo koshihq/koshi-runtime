@@ -1,0 +1,47 @@
+# Example: Koshi sidecar with custom ConfigMap-delivered policy
+#
+# This Deployment uses a namespace-local ConfigMap to deliver arbitrary custom
+# policy to the Koshi sidecar. Custom config works in both listener and
+# enforcement modes.
+#
+# Required annotations:
+#   runtime.getkoshi.ai/configmap — names the ConfigMap in this namespace
+#   runtime.getkoshi.ai/policy    — selects which policy from the ConfigMap to use
+#
+# Optional:
+#   runtime.getkoshi.ai/mode: "enforcement" — activates blocking (default: listener)
+#
+# See sidecar-custom-configmap.yaml for the ConfigMap manifest.
+#
+# Identity is derived from pod metadata at admission time.
+# Pod restart is required after ConfigMap or annotation changes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-ai-workload
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-ai-workload
+  template:
+    metadata:
+      labels:
+        app: my-ai-workload
+      annotations:
+        # Mount the namespace-local ConfigMap with custom policies.
+        runtime.getkoshi.ai/configmap: "koshi-sidecar-config"
+        # Select which policy from the ConfigMap to use (required).
+        runtime.getkoshi.ai/policy: "team-standard"
+        # Enable enforcement mode. Omit for listener mode (shadow audit).
+        runtime.getkoshi.ai/mode: "enforcement"
+    spec:
+      containers:
+        - name: app
+          image: my-ai-app:latest
+          ports:
+            - containerPort: 8080
+          # The webhook injects OPENAI_BASE_URL and ANTHROPIC_BASE_URL
+          # pointing to the sidecar. SDKs that honor these env vars will
+          # route through Koshi automatically.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -44,9 +45,77 @@ func main() {
 
 	// Load config.
 	configPath := os.Getenv("KOSHI_CONFIG_PATH")
+	koshiMode := os.Getenv("KOSHI_MODE")
 
 	var cfg *config.Config
-	if configPath != "" {
+	if configPath != "" && os.Getenv("KOSHI_POD_NAMESPACE") != "" {
+		// Sidecar file-config mode: ConfigMap-mounted custom config in an injected sidecar.
+		var err error
+		cfg, err = config.Parse(configPath)
+		if err != nil {
+			logger.Error("failed to parse sidecar config", "error", err, "path", configPath)
+			os.Exit(1)
+		}
+		if err := cfg.ValidateSidecarConfig(); err != nil {
+			logger.Error("invalid sidecar config", "error", err, "path", configPath)
+			os.Exit(1)
+		}
+
+		// Read pod identity from webhook-injected env vars.
+		ns := os.Getenv("KOSHI_POD_NAMESPACE")
+		wKind := os.Getenv("KOSHI_WORKLOAD_KIND")
+		wName := os.Getenv("KOSHI_WORKLOAD_NAME")
+		if wKind == "" || wName == "" {
+			logger.Error("sidecar file-config mode requires KOSHI_WORKLOAD_KIND and KOSHI_WORKLOAD_NAME",
+				"kind", wKind, "name", wName)
+			os.Exit(1)
+		}
+
+		// Mode: annotation/env only. cfg.Mode.Type is ignored for sidecars.
+		resolvedMode := "listener"
+		if koshiMode == "enforcement" {
+			resolvedMode = "enforcement"
+		}
+		if cfg.Mode.Type != "" && cfg.Mode.Type != resolvedMode {
+			logger.Warn("sidecar config mode.type differs from annotation — using annotation",
+				"config_mode", cfg.Mode.Type, "annotation_mode", resolvedMode)
+		}
+		cfg.Mode.Type = resolvedMode
+
+		// Policy: require explicit selection via runtime.getkoshi.ai/policy annotation.
+		policyOverride := os.Getenv("KOSHI_POLICY_OVERRIDE")
+		if policyOverride == "" {
+			logger.Error("sidecar custom config requires runtime.getkoshi.ai/policy annotation (KOSHI_POLICY_OVERRIDE)")
+			os.Exit(1)
+		}
+		found := false
+		for _, p := range cfg.Policies {
+			if p.ID == policyOverride {
+				found = true
+				break
+			}
+		}
+		if !found {
+			logger.Error("KOSHI_POLICY_OVERRIDE references unknown policy in sidecar config", "policy_id", policyOverride)
+			os.Exit(1)
+		}
+
+		// Synthesize workload from pod identity.
+		workloadID := fmt.Sprintf("%s/%s/%s", ns, wKind, wName)
+		cfg.Workloads = append(cfg.Workloads, config.Workload{
+			ID:         workloadID,
+			Type:       "sidecar",
+			Identity:   config.Identity{Mode: "pod"},
+			PolicyRefs: []string{policyOverride},
+		})
+
+		// Default listen address for sidecars.
+		if cfg.ListenAddr == "" {
+			cfg.ListenAddr = ":15080"
+		}
+
+		logger.Info("sidecar file-config mode", "mode", resolvedMode, "workload_id", workloadID, "policy", policyOverride, "source", configPath)
+	} else if configPath != "" {
 		var err error
 		cfg, err = config.Load(configPath)
 		if err != nil {
@@ -54,9 +123,51 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("config loaded", "mode", cfg.Mode.Type, "source", configPath, "workloads", len(cfg.Workloads), "policies", len(cfg.Policies))
-	} else {
+	} else if koshiMode == "enforcement" {
+		cfg = config.DefaultEnforcementSidecarConfig()
+
+		// Synthesize single workload from pod identity env vars.
+		ns := os.Getenv("KOSHI_POD_NAMESPACE")
+		wKind := os.Getenv("KOSHI_WORKLOAD_KIND")
+		wName := os.Getenv("KOSHI_WORKLOAD_NAME")
+		if ns == "" || wKind == "" || wName == "" {
+			logger.Error("sidecar enforcement mode requires KOSHI_POD_NAMESPACE, KOSHI_WORKLOAD_KIND, and KOSHI_WORKLOAD_NAME",
+				"namespace", ns, "kind", wKind, "name", wName)
+			os.Exit(1)
+		}
+
+		// Resolve policy: use override annotation or default to sidecar-baseline.
+		policyID := config.DefaultSidecarPolicyID
+		if override := os.Getenv("KOSHI_POLICY_OVERRIDE"); override != "" {
+			found := false
+			for _, p := range cfg.Policies {
+				if p.ID == override {
+					found = true
+					break
+				}
+			}
+			if !found {
+				logger.Error("KOSHI_POLICY_OVERRIDE references unknown built-in policy", "policy_id", override)
+				os.Exit(1)
+			}
+			policyID = override
+		}
+
+		// WorkloadID must match PodResolver.Resolve() format exactly.
+		workloadID := fmt.Sprintf("%s/%s/%s", ns, wKind, wName)
+		cfg.Workloads = append(cfg.Workloads, config.Workload{
+			ID:         workloadID,
+			Type:       "sidecar",
+			Identity:   config.Identity{Mode: "pod"},
+			PolicyRefs: []string{policyID},
+		})
+		logger.Info("sidecar enforcement mode", "workload_id", workloadID, "policy", policyID)
+	} else if koshiMode == "" {
 		cfg = config.DefaultListenerConfig()
 		logger.Info("no config path set, using default listener config", "mode", cfg.Mode.Type)
+	} else {
+		logger.Error("unsupported KOSHI_MODE value", "mode", koshiMode)
+		os.Exit(1)
 	}
 
 	// Wire dependencies based on mode.
@@ -121,12 +232,16 @@ func main() {
 			logger.Info("listener: using default policy", "accounting_key", listenerAccountingKey)
 		}
 	} else {
-		// Enforcement mode: use HeaderResolver.
-		headerKey := "x-genops-workload-id"
-		if len(cfg.Workloads) > 0 && cfg.Workloads[0].Identity.Key != "" {
-			headerKey = cfg.Workloads[0].Identity.Key
+		// Enforcement mode: choose resolver based on workload identity mode.
+		if len(cfg.Workloads) > 0 && cfg.Workloads[0].Identity.Mode == "pod" {
+			resolver = identity.NewPodResolver()
+		} else {
+			headerKey := "x-genops-workload-id"
+			if len(cfg.Workloads) > 0 && cfg.Workloads[0].Identity.Key != "" {
+				headerKey = cfg.Workloads[0].Identity.Key
+			}
+			resolver = identity.NewHeaderResolver(headerKey)
 		}
-		resolver = identity.NewHeaderResolver(headerKey)
 		policyEngine = policy.NewMapEngine(cfg, logger)
 
 		// Register each workload with its resolved policy's budget params.

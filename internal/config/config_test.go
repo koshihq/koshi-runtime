@@ -642,6 +642,109 @@ policies:
 	}
 }
 
+func TestSidecarPolicyCatalog(t *testing.T) {
+	catalog := SidecarPolicyCatalog()
+	if len(catalog) != 3 {
+		t.Fatalf("expected 3 policies in catalog, got %d", len(catalog))
+	}
+
+	expectedIDs := []string{"sidecar-baseline", "sidecar-strict", "sidecar-high-throughput"}
+	for i, id := range expectedIDs {
+		if catalog[i].ID != id {
+			t.Errorf("catalog[%d]: expected ID %q, got %q", i, id, catalog[i].ID)
+		}
+		if err := validatePolicy(&catalog[i]); err != nil {
+			t.Errorf("catalog policy %q fails validation: %v", id, err)
+		}
+	}
+
+	// Verify sidecar-baseline matches expected values.
+	baseline := catalog[0]
+	if baseline.Budgets.RollingTokens.LimitTokens != 100000 {
+		t.Errorf("baseline limit: expected 100000, got %d", baseline.Budgets.RollingTokens.LimitTokens)
+	}
+	if baseline.Guards.MaxTokensPerRequest != 4096 {
+		t.Errorf("baseline max tokens: expected 4096, got %d", baseline.Guards.MaxTokensPerRequest)
+	}
+
+	// Verify sidecar-strict is tighter.
+	strict := catalog[1]
+	if strict.Budgets.RollingTokens.LimitTokens != 25000 {
+		t.Errorf("strict limit: expected 25000, got %d", strict.Budgets.RollingTokens.LimitTokens)
+	}
+
+	// Verify sidecar-high-throughput is wider and has no tier3 kill.
+	ht := catalog[2]
+	if ht.Budgets.RollingTokens.LimitTokens != 500000 {
+		t.Errorf("high-throughput limit: expected 500000, got %d", ht.Budgets.RollingTokens.LimitTokens)
+	}
+	if ht.DecisionTiers.Tier3Platform.Action != "" {
+		t.Errorf("high-throughput should have no tier3 action, got %q", ht.DecisionTiers.Tier3Platform.Action)
+	}
+}
+
+func TestDefaultSidecarPolicyID(t *testing.T) {
+	if DefaultSidecarPolicyID != "sidecar-baseline" {
+		t.Errorf("expected DefaultSidecarPolicyID to be sidecar-baseline, got %q", DefaultSidecarPolicyID)
+	}
+	// Verify it exists in the catalog.
+	found := false
+	for _, p := range SidecarPolicyCatalog() {
+		if p.ID == DefaultSidecarPolicyID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("DefaultSidecarPolicyID not found in SidecarPolicyCatalog")
+	}
+}
+
+func TestDefaultEnforcementSidecarConfig(t *testing.T) {
+	cfg := DefaultEnforcementSidecarConfig()
+
+	if cfg.Mode.Type != "enforcement" {
+		t.Errorf("expected enforcement mode, got %q", cfg.Mode.Type)
+	}
+	if cfg.ListenAddr != ":15080" {
+		t.Errorf("expected listen addr :15080, got %q", cfg.ListenAddr)
+	}
+	if cfg.Upstreams["openai"] != "https://api.openai.com" {
+		t.Error("missing openai upstream")
+	}
+	if cfg.Upstreams["anthropic"] != "https://api.anthropic.com" {
+		t.Error("missing anthropic upstream")
+	}
+	if len(cfg.Policies) != 3 {
+		t.Fatalf("expected 3 policies (catalog), got %d", len(cfg.Policies))
+	}
+	if cfg.Policies[0].ID != "sidecar-baseline" {
+		t.Errorf("expected first policy sidecar-baseline, got %q", cfg.Policies[0].ID)
+	}
+	if cfg.DefaultPolicy != nil {
+		t.Error("expected no default policy for enforcement sidecar config")
+	}
+	if len(cfg.Workloads) != 0 {
+		t.Errorf("expected empty workloads, got %d", len(cfg.Workloads))
+	}
+}
+
+func TestDefaultEnforcementSidecarConfig_ValidatesAfterWorkloadAppended(t *testing.T) {
+	cfg := DefaultEnforcementSidecarConfig()
+
+	// Simulate what main.go does: append a workload and validate.
+	cfg.Workloads = append(cfg.Workloads, Workload{
+		ID:         "prod/Deployment/my-app",
+		Type:       "sidecar",
+		Identity:   Identity{Mode: "pod"},
+		PolicyRefs: []string{"sidecar-baseline"},
+	})
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("enforcement sidecar config with appended workload should validate: %v", err)
+	}
+}
+
 func TestSSEExtractionEnabled_Default(t *testing.T) {
 	cfg := &Config{}
 	if !cfg.SSEExtractionEnabled() {
@@ -660,6 +763,188 @@ func TestSSEExtractionEnabled_Explicit(t *testing.T) {
 	cfg.SSEExtraction = &tr
 	if !cfg.SSEExtractionEnabled() {
 		t.Error("expected SSE extraction enabled when explicitly true")
+	}
+}
+
+// --- ValidateSidecarConfig tests ---
+
+func TestValidateSidecarConfig_Valid(t *testing.T) {
+	path := writeTemp(t, `
+upstreams:
+  openai: "https://api.openai.com"
+policies:
+  - id: "custom-policy"
+    budgets:
+      rolling_tokens:
+        window_seconds: 300
+        limit_tokens: 50000
+        burst_tokens: 5000
+    guards:
+      max_tokens_per_request: 4096
+    decision_tiers:
+      tier1_auto:
+        action: "throttle"
+`)
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if err := cfg.ValidateSidecarConfig(); err != nil {
+		t.Errorf("expected valid sidecar config, got: %v", err)
+	}
+}
+
+func TestValidateSidecarConfig_MissingPolicies(t *testing.T) {
+	path := writeTemp(t, `
+upstreams:
+  openai: "https://api.openai.com"
+policies: []
+`)
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err = cfg.ValidateSidecarConfig()
+	if err == nil {
+		t.Fatal("expected error for missing policies")
+	}
+	if !strings.Contains(err.Error(), "at least one policy") {
+		t.Errorf("expected error about policies, got: %v", err)
+	}
+}
+
+func TestValidateSidecarConfig_HasWorkloads(t *testing.T) {
+	path := writeTemp(t, `
+upstreams:
+  openai: "https://api.openai.com"
+workloads:
+  - id: "should-not-be-here"
+    identity:
+      mode: "pod"
+    policy_refs:
+      - "custom-policy"
+policies:
+  - id: "custom-policy"
+    budgets:
+      rolling_tokens:
+        window_seconds: 300
+        limit_tokens: 50000
+        burst_tokens: 5000
+`)
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err = cfg.ValidateSidecarConfig()
+	if err == nil {
+		t.Fatal("expected error for workloads in sidecar config")
+	}
+	if !strings.Contains(err.Error(), "workloads must not be defined") {
+		t.Errorf("expected error about workloads, got: %v", err)
+	}
+}
+
+func TestValidateSidecarConfig_MissingUpstreams(t *testing.T) {
+	path := writeTemp(t, `
+policies:
+  - id: "custom-policy"
+    budgets:
+      rolling_tokens:
+        window_seconds: 300
+        limit_tokens: 50000
+        burst_tokens: 5000
+`)
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err = cfg.ValidateSidecarConfig()
+	if err == nil {
+		t.Fatal("expected error for missing upstreams")
+	}
+}
+
+func TestValidateSidecarConfig_InvalidModeType(t *testing.T) {
+	path := writeTemp(t, `
+mode:
+  type: "passthrough"
+upstreams:
+  openai: "https://api.openai.com"
+policies:
+  - id: "custom-policy"
+    budgets:
+      rolling_tokens:
+        window_seconds: 300
+        limit_tokens: 50000
+        burst_tokens: 5000
+`)
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err = cfg.ValidateSidecarConfig()
+	if err == nil {
+		t.Fatal("expected error for invalid mode type")
+	}
+}
+
+func TestValidateSidecarConfig_DuplicatePolicyID(t *testing.T) {
+	path := writeTemp(t, `
+upstreams:
+  openai: "https://api.openai.com"
+policies:
+  - id: "my-policy"
+    budgets:
+      rolling_tokens:
+        window_seconds: 300
+        limit_tokens: 50000
+        burst_tokens: 5000
+  - id: "my-policy"
+    budgets:
+      rolling_tokens:
+        window_seconds: 300
+        limit_tokens: 100000
+        burst_tokens: 10000
+`)
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err = cfg.ValidateSidecarConfig()
+	if err == nil {
+		t.Fatal("expected error for duplicate policy ID")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("expected error about duplicate, got: %v", err)
+	}
+}
+
+func TestParse_ReturnsConfigWithoutValidation(t *testing.T) {
+	// Parse should succeed even with a config that has an invalid policy
+	// (zero window_seconds) — validation happens separately.
+	path := writeTemp(t, `
+upstreams:
+  openai: "https://api.openai.com"
+policies:
+  - id: "bad-policy"
+    budgets:
+      rolling_tokens:
+        window_seconds: 0
+        limit_tokens: 50000
+        burst_tokens: 5000
+`)
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("expected Parse to succeed, got: %v", err)
+	}
+	if len(cfg.Policies) != 1 {
+		t.Errorf("expected 1 policy, got %d", len(cfg.Policies))
+	}
+
+	// Same config should fail standalone Load (which calls Validate).
+	_, err = Load(path)
+	if err == nil {
+		t.Fatal("expected Load to fail for config with invalid policy")
 	}
 }
 
@@ -683,6 +968,10 @@ func TestDefaultListenerConfig(t *testing.T) {
 	}
 	if cfg.DefaultPolicy.ID != "_listener_default" {
 		t.Errorf("expected policy ID _listener_default, got %q", cfg.DefaultPolicy.ID)
+	}
+	// Listener config now includes the sidecar policy catalog for KOSHI_POLICY_OVERRIDE.
+	if len(cfg.Policies) != 3 {
+		t.Errorf("expected 3 policies (catalog), got %d", len(cfg.Policies))
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("default listener config should pass validation: %v", err)

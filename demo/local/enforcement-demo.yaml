@@ -1,0 +1,40 @@
+# Demo: Sidecar enforcement with built-in policy
+#
+# This Deployment is identical to workload.yaml but adds enforcement mode
+# and strict policy annotations. Deploy after running setup.sh.
+#
+# Usage:
+#   kubectl apply -f enforcement-demo.yaml
+#   kubectl wait --for=condition=available deploy/demo-enforcement -n default --timeout=120s
+#
+# The sidecar-strict policy enforces:
+#   - 2048 max tokens per request
+#   - 25k token rolling budget per hour
+#   - Tier 1: throttle (429), Tier 3: kill (503)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-enforcement
+  namespace: default
+  labels:
+    app: demo-enforcement
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-enforcement
+  template:
+    metadata:
+      labels:
+        app: demo-enforcement
+      annotations:
+        runtime.getkoshi.ai/mode: "enforcement"
+        runtime.getkoshi.ai/policy: "sidecar-strict"
+    spec:
+      containers:
+        - name: app
+          image: curlimages/curl:latest
+          command: ["sleep", "infinity"]
+          # OPENAI_BASE_URL will be injected by the Koshi webhook
+          # pointing at http://localhost:15080

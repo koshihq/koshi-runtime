@@ -81,6 +81,44 @@ func TestPodResolver_PartialWorkload_KindOnly(t *testing.T) {
 	}
 }
 
+// --- Workload ID alignment test (sidecar enforcement invariant) ---
+
+func TestPodResolver_WorkloadIDMatchesSynthesizedFormat(t *testing.T) {
+	// This test proves the key invariant for sidecar enforcement:
+	// the workload ID synthesized at startup (fmt.Sprintf("%s/%s/%s", ns, kind, name))
+	// exactly matches what PodResolver.Resolve() returns at request time.
+	tests := []struct {
+		name      string
+		namespace string
+		kind      string
+		wName     string
+	}{
+		{"deployment", "prod", "Deployment", "payments-api"},
+		{"statefulset", "staging", "StatefulSet", "redis-cluster"},
+		{"job", "batch", "Job", "data-import"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// What main.go synthesizes at startup.
+			synthesized := tt.namespace + "/" + tt.kind + "/" + tt.wName
+
+			// What PodResolver returns at request time.
+			r := NewPodResolverFromValues(tt.namespace, tt.kind, tt.wName, "some-pod")
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			id, err := r.Resolve(req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if id.WorkloadID != synthesized {
+				t.Errorf("workload ID mismatch: synthesized %q, PodResolver returned %q",
+					synthesized, id.WorkloadID)
+			}
+		})
+	}
+}
+
 // --- HeaderResolver tests ---
 
 func TestHeaderResolver_Present(t *testing.T) {

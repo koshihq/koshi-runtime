@@ -391,6 +391,404 @@ func TestWebhook_CustomPortListenAddr(t *testing.T) {
 	t.Error("expected sidecar container patch")
 }
 
+func TestWebhook_EnforcementModeAnnotation(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "my-pod",
+			Annotations: map[string]string{"runtime.getkoshi.ai/mode": "enforcement"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			checkEnv(t, container.Env, "KOSHI_MODE", "enforcement")
+			return
+		}
+	}
+	t.Error("expected sidecar container patch with KOSHI_MODE")
+}
+
+func TestWebhook_ListenerModeAnnotation_NoKoshiMode(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "my-pod",
+			Annotations: map[string]string{"runtime.getkoshi.ai/mode": "listener"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			for _, e := range container.Env {
+				if e.Name == "KOSHI_MODE" {
+					t.Error("KOSHI_MODE should not be injected for listener mode annotation")
+				}
+			}
+			return
+		}
+	}
+	t.Error("expected sidecar container patch")
+}
+
+func TestWebhook_NoModeAnnotation_NoKoshiMode(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-pod"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			for _, e := range container.Env {
+				if e.Name == "KOSHI_MODE" {
+					t.Error("KOSHI_MODE should not be injected when no mode annotation present")
+				}
+			}
+			return
+		}
+	}
+	t.Error("expected sidecar container patch")
+}
+
+func TestWebhook_ModeAndPolicyAnnotationsTogether(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "my-pod",
+			Annotations: map[string]string{
+				"runtime.getkoshi.ai/mode":   "enforcement",
+				"runtime.getkoshi.ai/policy": "sidecar-strict",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			checkEnv(t, container.Env, "KOSHI_MODE", "enforcement")
+			checkEnv(t, container.Env, "KOSHI_POLICY_OVERRIDE", "sidecar-strict")
+			return
+		}
+	}
+	t.Error("expected sidecar container patch with both KOSHI_MODE and KOSHI_POLICY_OVERRIDE")
+}
+
+func TestWebhook_UnknownModeAnnotation_NoKoshiMode(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "my-pod",
+			Annotations: map[string]string{"runtime.getkoshi.ai/mode": "bogus"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			for _, e := range container.Env {
+				if e.Name == "KOSHI_MODE" {
+					t.Error("KOSHI_MODE should not be injected for unrecognized mode annotation")
+				}
+			}
+			return
+		}
+	}
+	t.Error("expected sidecar container patch")
+}
+
+func TestWebhook_ConfigmapAnnotation_InjectsVolumeAndMount(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "my-pod",
+			Annotations: map[string]string{
+				"runtime.getkoshi.ai/configmap": "my-custom-config",
+				"runtime.getkoshi.ai/policy":    "custom-policy",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	// Verify sidecar has KOSHI_CONFIG_PATH env var and volumeMount.
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			checkEnv(t, container.Env, "KOSHI_CONFIG_PATH", "/etc/koshi-sidecar/config.yaml")
+			checkEnv(t, container.Env, "KOSHI_POLICY_OVERRIDE", "custom-policy")
+			if len(container.VolumeMounts) != 1 {
+				t.Fatalf("expected 1 volumeMount, got %d", len(container.VolumeMounts))
+			}
+			vm := container.VolumeMounts[0]
+			if vm.Name != "koshi-sidecar-config" {
+				t.Errorf("expected volumeMount name koshi-sidecar-config, got %q", vm.Name)
+			}
+			if vm.MountPath != "/etc/koshi-sidecar" {
+				t.Errorf("expected mountPath /etc/koshi-sidecar, got %q", vm.MountPath)
+			}
+			if !vm.ReadOnly {
+				t.Error("expected volumeMount to be read-only")
+			}
+			break
+		}
+	}
+
+	// Verify volume init and append patches.
+	foundVolInit := false
+	foundVolAppend := false
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/volumes" {
+			foundVolInit = true
+		}
+		if p.Op == "add" && p.Path == "/spec/volumes/-" {
+			foundVolAppend = true
+			volBytes, _ := json.Marshal(p.Value)
+			var vol corev1.Volume
+			json.Unmarshal(volBytes, &vol)
+			if vol.Name != "koshi-sidecar-config" {
+				t.Errorf("expected volume name koshi-sidecar-config, got %q", vol.Name)
+			}
+			if vol.ConfigMap == nil || vol.ConfigMap.Name != "my-custom-config" {
+				t.Errorf("expected configMap name my-custom-config, got %+v", vol.ConfigMap)
+			}
+		}
+	}
+	if !foundVolInit {
+		t.Error("expected volume init patch (/spec/volumes)")
+	}
+	if !foundVolAppend {
+		t.Error("expected volume append patch (/spec/volumes/-)")
+	}
+}
+
+func TestWebhook_NoConfigmapAnnotation_NoVolumes(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-pod"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Path == "/spec/volumes" || p.Path == "/spec/volumes/-" {
+			t.Errorf("unexpected volume patch when configmap annotation absent: %s %s", p.Op, p.Path)
+		}
+	}
+
+	// Sidecar should not have KOSHI_CONFIG_PATH.
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			for _, e := range container.Env {
+				if e.Name == "KOSHI_CONFIG_PATH" {
+					t.Error("KOSHI_CONFIG_PATH should not be set when configmap annotation is absent")
+				}
+			}
+			break
+		}
+	}
+}
+
+func TestWebhook_ConfigmapAndModeAndPolicy_AllThree(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "my-pod",
+			Annotations: map[string]string{
+				"runtime.getkoshi.ai/mode":      "enforcement",
+				"runtime.getkoshi.ai/policy":    "my-custom-policy",
+				"runtime.getkoshi.ai/configmap": "my-config",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/containers/-" {
+			containerBytes, _ := json.Marshal(p.Value)
+			var container corev1.Container
+			json.Unmarshal(containerBytes, &container)
+			checkEnv(t, container.Env, "KOSHI_MODE", "enforcement")
+			checkEnv(t, container.Env, "KOSHI_POLICY_OVERRIDE", "my-custom-policy")
+			checkEnv(t, container.Env, "KOSHI_CONFIG_PATH", "/etc/koshi-sidecar/config.yaml")
+			if len(container.VolumeMounts) != 1 {
+				t.Errorf("expected 1 volumeMount, got %d", len(container.VolumeMounts))
+			}
+			return
+		}
+	}
+	t.Error("expected sidecar container patch")
+}
+
+func TestWebhook_ConfigmapWithoutPolicy_StillInjects(t *testing.T) {
+	// Webhook injects volume/mount regardless — policy requirement is enforced at
+	// sidecar startup, not admission time.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "my-pod",
+			Annotations: map[string]string{
+				"runtime.getkoshi.ai/configmap": "my-config",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	foundVolume := false
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/volumes/-" {
+			foundVolume = true
+		}
+	}
+	if !foundVolume {
+		t.Error("expected volume patch even without policy annotation")
+	}
+}
+
+func TestWebhook_ConfigmapWithExistingVolumes_NoInit(t *testing.T) {
+	// Pod already has volumes — should NOT get /spec/volumes init patch.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "my-pod",
+			Annotations: map[string]string{
+				"runtime.getkoshi.ai/configmap": "my-config",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Env: []corev1.EnvVar{}}},
+			Volumes: []corev1.Volume{
+				{Name: "existing-vol"},
+			},
+		},
+	}
+
+	resp, err := HandleMutate(testConfig(), makeReview(pod, "prod"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var patches []JSONPatchOp
+	json.Unmarshal(resp.Patch, &patches)
+
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/volumes" {
+			t.Error("should not init volumes array when pod already has volumes")
+		}
+	}
+
+	// Should still have the append patch.
+	foundAppend := false
+	for _, p := range patches {
+		if p.Op == "add" && p.Path == "/spec/volumes/-" {
+			foundAppend = true
+		}
+	}
+	if !foundAppend {
+		t.Error("expected volume append patch")
+	}
+}
+
 func checkEnv(t *testing.T, envs []corev1.EnvVar, name, expectedValue string) {
 	t.Helper()
 	for _, e := range envs {

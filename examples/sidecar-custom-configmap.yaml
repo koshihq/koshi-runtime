@@ -1,0 +1,57 @@
+# Example: Namespace-local ConfigMap for sidecar custom policy
+#
+# This ConfigMap delivers arbitrary custom policy to Koshi sidecars in this
+# namespace. Reference it from pod annotations:
+#
+#   runtime.getkoshi.ai/configmap: "koshi-sidecar-config"
+#   runtime.getkoshi.ai/policy: "team-standard"        # required
+#   runtime.getkoshi.ai/mode: "enforcement"             # optional, defaults to listener
+#
+# The ConfigMap must contain a `config.yaml` data key. The sidecar loads it
+# from /etc/koshi-sidecar/config.yaml.
+#
+# Rules:
+#   - Do NOT define `workloads` — the sidecar synthesizes its own workload
+#     from pod identity at startup
+#   - `default_policy` is ignored — use the runtime.getkoshi.ai/policy annotation
+#   - `mode.type` is ignored — mode comes from the runtime.getkoshi.ai/mode annotation
+#   - Pod restart is required after ConfigMap changes
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: koshi-sidecar-config
+  namespace: default
+data:
+  config.yaml: |
+    upstreams:
+      openai: "https://api.openai.com"
+      anthropic: "https://api.anthropic.com"
+
+    policies:
+      - id: "team-standard"
+        budgets:
+          rolling_tokens:
+            window_seconds: 3600
+            limit_tokens: 200000
+            burst_tokens: 20000
+        guards:
+          max_tokens_per_request: 8192
+        decision_tiers:
+          tier1_auto:
+            action: "throttle"
+          tier3_platform:
+            action: "kill_workload"
+
+      - id: "team-conservative"
+        budgets:
+          rolling_tokens:
+            window_seconds: 3600
+            limit_tokens: 50000
+            burst_tokens: 5000
+        guards:
+          max_tokens_per_request: 4096
+        decision_tiers:
+          tier1_auto:
+            action: "throttle"
+          tier3_platform:
+            action: "kill_workload"

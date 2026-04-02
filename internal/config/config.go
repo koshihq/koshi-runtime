@@ -76,8 +76,10 @@ type TierAction struct {
 	Action string `yaml:"action"` // "throttle", "kill_workload"
 }
 
-// Load reads and parses a YAML config file, then validates it.
-func Load(path string) (*Config, error) {
+// Parse reads and unmarshals a YAML config file without validation.
+// Use Load() for standalone configs (parse + Validate) or call
+// ValidateSidecarConfig() for sidecar custom configs.
+func Parse(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: read file: %w", err)
@@ -88,11 +90,21 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse yaml: %w", err)
 	}
 
+	return &cfg, nil
+}
+
+// Load reads and parses a YAML config file, then validates it for standalone use.
+func Load(path string) (*Config, error) {
+	cfg, err := Parse(path)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config: validate: %w", err)
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
 // Validate checks all configuration constraints. Returns an error describing
@@ -209,6 +221,53 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// ValidateSidecarConfig checks configuration constraints specific to sidecar
+// custom configs delivered via namespace-local ConfigMap. Sidecar configs provide
+// named policies only; the runtime selects one via KOSHI_POLICY_OVERRIDE and
+// synthesizes a workload at startup. No default_policy or workloads needed.
+func (c *Config) ValidateSidecarConfig() error {
+	if c.Mode.Type != "" && c.Mode.Type != "listener" && c.Mode.Type != "enforcement" {
+		return fmt.Errorf("mode.type: must be \"listener\" or \"enforcement\", got %q", c.Mode.Type)
+	}
+
+	if len(c.Upstreams) == 0 {
+		return errors.New("upstreams: at least one upstream must be configured")
+	}
+	for name, url := range c.Upstreams {
+		if url == "" {
+			return fmt.Errorf("upstreams.%s: URL must not be empty", name)
+		}
+		if name == "google" {
+			return fmt.Errorf("upstreams.google: Google provider is not supported in v1; remove this upstream")
+		}
+	}
+
+	if len(c.Policies) == 0 {
+		return errors.New("policies: at least one policy must be defined")
+	}
+
+	policyIDs := make(map[string]struct{}, len(c.Policies))
+	for _, p := range c.Policies {
+		if p.ID == "" {
+			return errors.New("policies: policy ID must not be empty")
+		}
+		if _, dup := policyIDs[p.ID]; dup {
+			return fmt.Errorf("policies: duplicate policy ID %q", p.ID)
+		}
+		policyIDs[p.ID] = struct{}{}
+
+		if err := validatePolicy(&p); err != nil {
+			return fmt.Errorf("policies.%s: %w", p.ID, err)
+		}
+	}
+
+	if len(c.Workloads) > 0 {
+		return errors.New("workloads must not be defined in sidecar config — workloads are synthesized at startup from pod identity")
+	}
+
+	return nil
+}
+
 func validatePolicy(p *Policy) error {
 	b := p.Budgets.RollingTokens
 	if b.WindowSeconds <= 0 {
@@ -226,8 +285,71 @@ func validatePolicy(p *Policy) error {
 	return nil
 }
 
+// SidecarPolicyCatalog returns the built-in sidecar policy catalog. These
+// policies are available for selection via the runtime.getkoshi.ai/policy
+// pod annotation in both listener and enforcement sidecar modes.
+func SidecarPolicyCatalog() []Policy {
+	return []Policy{
+		{
+			ID: "sidecar-baseline",
+			Budgets: Budgets{
+				RollingTokens: RollingTokenBudget{
+					WindowSeconds: 3600,
+					LimitTokens:   100000,
+					BurstTokens:   10000,
+				},
+			},
+			Guards: Guards{
+				MaxTokensPerRequest: 4096,
+			},
+			DecisionTiers: DecisionTiers{
+				Tier1Auto:     TierAction{Action: "throttle"},
+				Tier3Platform: TierAction{Action: "kill_workload"},
+			},
+		},
+		{
+			ID: "sidecar-strict",
+			Budgets: Budgets{
+				RollingTokens: RollingTokenBudget{
+					WindowSeconds: 3600,
+					LimitTokens:   25000,
+					BurstTokens:   2500,
+				},
+			},
+			Guards: Guards{
+				MaxTokensPerRequest: 2048,
+			},
+			DecisionTiers: DecisionTiers{
+				Tier1Auto:     TierAction{Action: "throttle"},
+				Tier3Platform: TierAction{Action: "kill_workload"},
+			},
+		},
+		{
+			ID: "sidecar-high-throughput",
+			Budgets: Budgets{
+				RollingTokens: RollingTokenBudget{
+					WindowSeconds: 3600,
+					LimitTokens:   500000,
+					BurstTokens:   50000,
+				},
+			},
+			Guards: Guards{
+				MaxTokensPerRequest: 32768,
+			},
+			DecisionTiers: DecisionTiers{
+				Tier1Auto: TierAction{Action: "throttle"},
+			},
+		},
+	}
+}
+
+// DefaultSidecarPolicyID is the policy used when no runtime.getkoshi.ai/policy
+// annotation is set on the pod.
+const DefaultSidecarPolicyID = "sidecar-baseline"
+
 // DefaultListenerConfig returns the standard in-memory listener config used by
-// injected sidecars that have no KOSHI_CONFIG_PATH set.
+// injected sidecars that have no KOSHI_CONFIG_PATH set. Includes the built-in
+// sidecar policy catalog so KOSHI_POLICY_OVERRIDE can select a named policy.
 func DefaultListenerConfig() *Config {
 	return &Config{
 		Mode:       Mode{Type: "listener"},
@@ -236,6 +358,7 @@ func DefaultListenerConfig() *Config {
 			"openai":    "https://api.openai.com",
 			"anthropic": "https://api.anthropic.com",
 		},
+		Policies: SidecarPolicyCatalog(),
 		DefaultPolicy: &Policy{
 			ID: "_listener_default",
 			Budgets: Budgets{
@@ -252,6 +375,23 @@ func DefaultListenerConfig() *Config {
 				Tier1Auto: TierAction{Action: "throttle"},
 			},
 		},
+	}
+}
+
+// DefaultEnforcementSidecarConfig returns the built-in enforcement config used
+// by injected sidecars running in enforcement mode (KOSHI_MODE=enforcement).
+// It includes the full sidecar policy catalog; the single workload entry is
+// synthesized at startup from pod identity env vars and attached to a selected
+// (or default) policy before building the policy engine.
+func DefaultEnforcementSidecarConfig() *Config {
+	return &Config{
+		Mode:       Mode{Type: "enforcement"},
+		ListenAddr: ":15080",
+		Upstreams: map[string]string{
+			"openai":    "https://api.openai.com",
+			"anthropic": "https://api.anthropic.com",
+		},
+		Policies: SidecarPolicyCatalog(),
 	}
 }
 

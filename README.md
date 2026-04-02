@@ -1,8 +1,8 @@
 # Koshi Runtime
 
-Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys as a Kubernetes sidecar that enforces deterministic policy at the workload boundary — token budgets, per-request guards, and tiered enforcement decisions — using reservation-first accounting.
+Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys as a Kubernetes sidecar that enforces deterministic policy at the workload boundary — token budgets, per-request guards, and tiered enforcement decisions — using reservation-first accounting. The sidecar supports three operating shapes: listener audit (shadow-only, default), enforcement with built-in policy presets, and enforcement with operator-authored custom policy delivered via namespace-local ConfigMap. A standalone deployment model is available for centralized enforcement with header-based identity.
 
-**Discover your governance posture before enforcing it.** Koshi ships in **listener mode** by default: the full enforcement pipeline — identity resolution, policy lookup, guard evaluation, budget accounting — executes on every request, but no traffic is blocked. Shadow decisions (`would_reject`, `would_throttle`, `would_kill`) reveal exactly where your policies would intervene. When the posture matches your intent, enforcement uses the same binary and Helm chart. For standalone deployments, enabling enforcement is a config change. For injected sidecars, sidecar-level enforcement is planned for a future release — see [Enabling Enforcement](#enabling-enforcement).
+**Discover your governance posture before enforcing it.** Koshi ships in **listener mode** by default: the full enforcement pipeline — identity resolution, policy lookup, guard evaluation, budget accounting — executes on every request, but no traffic is blocked. Shadow decisions (`would_reject`, `would_throttle`, `would_kill`) reveal exactly where your policies would intervene. When the posture matches your intent, activate enforcement on the same sidecar — choose built-in policy presets via the `runtime.getkoshi.ai/policy` annotation, or deliver custom policy via a namespace-local ConfigMap (`runtime.getkoshi.ai/configmap`). Both work with a single annotation change and a pod restart. See [From Audit to Enforcement](#from-audit-to-enforcement).
 
 **No repo clone required.** Install Koshi directly from the published OCI Helm chart and container image.
 
@@ -58,7 +58,7 @@ Workloads produce governance signal when they send OpenAI- or Anthropic-compatib
 |-----------|-----------|---------|
 | Injector Deployment | `koshi-system` | Mutating admission webhook — injects sidecar into labeled namespaces |
 | MutatingWebhookConfiguration | cluster-scoped | Intercepts pod CREATE in namespaces with `runtime.getkoshi.ai/inject: "true"` |
-| ConfigMap | `koshi-system` | Runtime config for the control-plane deployment (mode, upstreams, default policy). Injected sidecars use the built-in default listener config, not this ConfigMap. |
+| ConfigMap | `koshi-system` | Runtime config for the control-plane deployment (mode, upstreams, default policy). Injected sidecars use built-in sidecar config by default (mode and policy selected via pod annotations); they do not read this ConfigMap. For custom sidecar policy, operators create a separate namespace-local ConfigMap and reference it via `runtime.getkoshi.ai/configmap`. |
 | TLS Secret | `koshi-system` | Webhook serving certificate (self-signed by default) |
 | NetworkPolicy | `koshi-system` | Restricts injector ingress to apiserver, sidecar egress to upstreams |
 
@@ -105,9 +105,9 @@ In standalone (non-Kubernetes) mode, identity comes from an HTTP header (default
 
 ## Configuration
 
-Config is loaded from `KOSHI_CONFIG_PATH` when set. If `KOSHI_CONFIG_PATH` is unset, the runtime uses a built-in default listener config.
+Config is loaded from `KOSHI_CONFIG_PATH` when set. If `KOSHI_CONFIG_PATH` is unset, injected sidecars use built-in sidecar config; `KOSHI_MODE` and `KOSHI_POLICY_OVERRIDE` (set via pod annotations) determine listener vs enforcement mode and built-in policy selection.
 
-**Sidecar config behavior:** The control-plane deployment (main runtime and injector) uses the charted ConfigMap via `KOSHI_CONFIG_PATH`. Injected sidecars in workload pods use the built-in default listener config — no ConfigMap dependency in the workload namespace.
+**Sidecar config behavior:** The control-plane deployment (main runtime and injector) uses the charted ConfigMap via `KOSHI_CONFIG_PATH`. Injected sidecars use built-in sidecar config by default — listener mode by default, enforcement mode when annotated — with selectable built-in policies. For arbitrary custom policy, annotate the pod with `runtime.getkoshi.ai/configmap` to mount a namespace-local ConfigMap containing custom policies, and `runtime.getkoshi.ai/policy` to select which policy to use. See [Path C: Sidecar custom config](#path-c-sidecar-custom-config-via-configmap).
 
 ### Listener Mode (recommended starting point)
 
@@ -257,7 +257,9 @@ Key Helm values:
 | Annotation | Values | Description |
 |------------|--------|-------------|
 | `runtime.getkoshi.ai/inject` | `"false"` | Opt out a specific pod from injection |
-| `runtime.getkoshi.ai/policy` | policy ID | Per-workload policy override. Not functional for injected sidecars in the current default install path — the built-in default config does not include named policies, so setting this annotation will cause the sidecar to fail at startup. Planned for a future release. |
+| `runtime.getkoshi.ai/mode` | `"enforcement"` | Enable sidecar enforcement mode. When set, the sidecar actively blocks requests that violate policy (429/503). Omit or set to `"listener"` for shadow-only audit mode (default). |
+| `runtime.getkoshi.ai/policy` | policy ID | Select a built-in sidecar policy: `sidecar-baseline` (default), `sidecar-strict`, `sidecar-high-throughput`. Works in both listener and enforcement sidecar modes. **Required** when `runtime.getkoshi.ai/configmap` is set. Unknown IDs fail at sidecar startup. |
+| `runtime.getkoshi.ai/configmap` | ConfigMap name | Mount a namespace-local ConfigMap containing custom sidecar policy. The ConfigMap must contain a `config.yaml` data key. Must be paired with `runtime.getkoshi.ai/policy` to select which policy from the ConfigMap to use. Works in both listener and enforcement modes. |
 
 ## Health Endpoints
 
@@ -272,16 +274,28 @@ Key Helm values:
 
 Koshi supports two deployment models today. They serve different purposes and have different operational characteristics.
 
-| | Injected sidecar (listener) | Standalone deployment (enforcement) |
+| | Injected sidecar | Standalone deployment |
 |---|---|---|
-| **Purpose** | Low-risk governance audit and posture discovery | Centralized runtime — current path to live enforcement |
+| **Purpose** | Governance audit (listener mode, default) or live enforcement with per-pod blast radius (enforcement mode via annotation) | Centralized enforcement with full custom policy config |
 | **Identity** | Pod metadata (injected by webhook at admission) | HTTP header (`x-genops-workload-id` default) |
-| **Config source** | Built-in default listener config | File-based runtime config (`KOSHI_CONFIG_PATH` / ConfigMap) |
-| **Policy** | Single built-in default policy | Named policies with per-workload binding |
-| **Traffic effect** | None — shadow decisions only, all traffic proxied | Active — 403 / 429 / 503 on policy violations |
+| **Config source** | Built-in sidecar config by default (mode and policy via pod annotations); namespace-local ConfigMap when `runtime.getkoshi.ai/configmap` is set | File-based runtime config (`KOSHI_CONFIG_PATH` / ConfigMap) |
+| **Policy** | Built-in policy catalog (`sidecar-baseline`, `sidecar-strict`, `sidecar-high-throughput`) selectable via annotation; or arbitrary custom policy via namespace-local ConfigMap | Named policies with per-workload binding; fully operator-defined |
+| **Traffic effect** | Shadow-only by default; active enforcement (403 / 429 / 503) when mode annotation is set | Active — 403 / 429 / 503 on policy violations |
 | **Blast radius** | Per pod (each sidecar is independent) | Centralized (all routed traffic shares one deployment) |
 | **Availability** | Sidecar lifecycle follows the workload pod | Operator-managed; default chart runs a single replica |
-| **Metrics** | `koshi_listener_*` series | `koshi_enforcement_*` series |
+| **Metrics** | `koshi_listener_*` or `koshi_enforcement_*` series (depending on mode) | `koshi_enforcement_*` series |
+
+### Sidecar Operating Shapes
+
+The injected sidecar supports three operating shapes, controlled by pod annotations:
+
+| | Listener (default) | Enforcement + built-in policy | Custom ConfigMap sidecar |
+|---|---|---|---|
+| **Mode annotation** | none (or `listener`) | `enforcement` | optional — omit for shadow, `enforcement` for blocking |
+| **Policy annotation** | optional (selects built-in for shadow eval) | optional (defaults to `sidecar-baseline`) | **required** (selects from ConfigMap) |
+| **ConfigMap annotation** | none | none | **required** |
+| **Traffic effect** | Shadow only | Active blocking (429/503) | Shadow if no mode annotation; active blocking (429/503) if `enforcement` |
+| **Policy source** | Built-in defaults | Built-in catalog | Operator-authored ConfigMap |
 
 ### Current Adoption Path
 
@@ -289,23 +303,47 @@ Koshi supports two deployment models today. They serve different purposes and ha
 
 2. **Validate** — use shadow outcomes, identity coverage, and token pressure to finalize policy intent. See [Posture Discovery](#posture-discovery-in-listener-mode) and the [pre-enforcement checklist](docs/kubernetes-observability.md#pre-enforcement-checklist).
 
-3. **Enforce** — operationalize live blocking through a self-hosted standalone Koshi runtime (in Kubernetes, typically a Deployment exposed via a Service). This is a **deployment-model handoff**, not an in-place sidecar config flip. See [From Audit to Enforcement](#from-audit-to-enforcement) and the [onboarding guide](docs/onboarding.md#from-listener-audit-to-standalone-enforcement) for concrete steps.
+3. **Enforce** — three paths are available:
+   - **Sidecar enforcement with built-in policy** (in-place): add `runtime.getkoshi.ai/mode: enforcement` to pod annotations and optionally select a built-in policy via `runtime.getkoshi.ai/policy`. No routing change, no identity change, per-pod blast radius preserved. See [Path A](#path-a-sidecar-enforcement-in-place).
+   - **Sidecar custom config via ConfigMap**: mount a namespace-local ConfigMap with custom policies via `runtime.getkoshi.ai/configmap` and `runtime.getkoshi.ai/policy` annotations. Works in both listener and enforcement modes. See [Path C](#path-c-sidecar-custom-config-via-configmap).
+   - **Standalone enforcement** (deployment handoff): deploy Koshi as a self-hosted standalone runtime for centralized enforcement and header-based identity. This is a deployment-model handoff. See [Path B](#path-b-standalone-enforcement-deployment-handoff) and the [onboarding guide](docs/onboarding.md#from-listener-audit-to-enforcement).
 
-**Why the handoff?** Injected sidecars use the built-in default listener config and do not read the chart ConfigMap. Sidecar config delivery and in-place sidecar enforcement are planned for a future release. Until then, moving from audit to enforcement means deploying Koshi as a self-hosted standalone runtime and routing application traffic through it.
-
-### Standalone Availability Considerations
-
-Standalone enforcement introduces a shared traffic path through a self-hosted Koshi runtime that differs from sidecar listener mode:
-
-- The default chart runs a single runtime replica. Operators should evaluate replica count, resource allocation, and disruption budget for their availability requirements.
-- Scaling replicas improves availability, but does **not** provide globally shared budget state or cross-replica coordination in v1. Each replica maintains independent in-memory accounting.
-- Application traffic must be routed to the standalone deployment (e.g., via a Kubernetes Service), and callers must send the configured workload identity header.
-
-These are standard operational concerns — not blockers — but they should be considered as part of the enforcement rollout design.
+**Most teams should start with Path A or Path C.** Both preserve per-pod blast radius and require no routing or identity changes. Choose Path A (built-in presets) when standard limits fit, or Path C (custom ConfigMap) when you need operator-authored budgets and guards. Path B (standalone) is for teams that need centralized enforcement across workloads, header-based identity, or a shared enforcement point.
 
 ## From Audit to Enforcement
 
-Moving from sidecar listener audits to standalone enforcement is not a config change — it is a deployment-model handoff involving three distinct transitions and one operational risk that should be planned for explicitly.
+There are three paths from listener audit to live enforcement. Choose based on your policy requirements.
+
+| | Path A: Built-in sidecar | Path C: Custom ConfigMap | Path B: Standalone |
+|---|---|---|---|
+| **Policy** | Built-in catalog (3 presets) | Operator-authored (any budgets/guards/tiers) | Operator-authored (full config file) |
+| **Identity** | Pod metadata (automatic) | Pod metadata (automatic) | HTTP header (manual) |
+| **Traffic change** | None | None | Reroute to standalone Service |
+| **Blast radius** | Per pod | Per pod | All routed workloads |
+| **Config delivery** | Pod annotation | Namespace-local ConfigMap | `KOSHI_CONFIG_PATH` |
+| **Best for** | Quick adoption, standard limits | Team-specific budgets and guards | Centralized coordination, header identity |
+
+### Path A: Sidecar enforcement (in-place)
+
+**When to choose:** You want enforcement with minimal effort and the built-in policy presets fit your workload's token patterns. This is the fastest path from listener audit to live enforcement.
+
+The simplest path. Add pod annotations and enforcement is active on the next pod restart. No routing change, no identity change, no config file.
+
+1. Add `runtime.getkoshi.ai/mode: "enforcement"` to the pod template annotations
+2. Optionally select a built-in policy: `runtime.getkoshi.ai/policy: "sidecar-strict"` (defaults to `sidecar-baseline`)
+3. Restart the workload — the sidecar now actively blocks requests that violate the selected policy
+
+**What you get:** live enforcement with per-pod blast radius, pod-derived identity, and built-in policy selection (`sidecar-baseline`, `sidecar-strict`, `sidecar-high-throughput`).
+
+**What you don't get:** arbitrary custom policy (custom budgets, guards, tier configs) — for that, use [Path C (sidecar custom config via ConfigMap)](#path-c-sidecar-custom-config-via-configmap). For centralized budget coordination or header-based identity, use standalone enforcement.
+
+See [`examples/enforcement-sidecar-deployment.yaml`](examples/enforcement-sidecar-deployment.yaml) for a complete example.
+
+### Path B: Standalone enforcement (deployment handoff)
+
+**When to choose:** You need centralized budget coordination across workloads, header-based identity, or a shared enforcement point. Most teams should start with sidecar enforcement (Path A or C) and only move to standalone if these specific requirements emerge.
+
+Moving to standalone enforcement is not a config change — it is a deployment-model handoff involving three distinct transitions and one operational risk that should be planned for explicitly.
 
 ### Policy transition
 
@@ -331,13 +369,13 @@ Sidecar listener mode works because the webhook redirects app traffic locally to
 
 - Application HTTP clients must be pointed at the standalone Koshi runtime (e.g., via a Kubernetes Service) instead of directly at AI provider APIs.
 - For workloads being moved to standalone enforcement, the injected sidecar path should be removed or bypassed — this typically means removing the namespace label and restarting workloads.
-- The path to enforcement today is not "flip the same sidecars to enforcement mode" but "move traffic from sidecar-local routing to standalone routing."
+- For standalone enforcement specifically, this is a traffic-path change from sidecar-local routing to standalone routing. (For sidecar enforcement, no traffic change is needed — see [Path A](#path-a-sidecar-enforcement-in-place) and [Path C](#path-c-sidecar-custom-config-via-configmap).)
 
 ### Rollout considerations
 
 This handoff is a traffic-path change, not just a policy or config change. Operators should plan for:
 
-- **Shared enforcement path:** all routed traffic flows through a self-hosted Koshi runtime, unlike per-pod sidecars where each workload has its own listener instance.
+- **Shared enforcement path:** all routed traffic flows through a self-hosted Koshi runtime, unlike per-pod sidecars where each workload has its own independent sidecar instance.
 - **Broader-scope traffic change:** a misconfiguration in the standalone runtime or its routing (e.g., Kubernetes Service) affects all workloads routed through it, so testing with a narrow subset first is worthwhile.
 - **Traffic cutover coordination:** incorrect routing targets, missing identity headers, or DNS issues can misroute traffic. Validate connectivity before shifting production workloads.
 - **Rollback path:** restoring the previous state means re-enabling sidecar injection and restarting workloads, not changing a config value. Plan this path before cutting over.
@@ -423,11 +461,50 @@ Fields chosen by the operator (not in audit output):
 Traffic change:
 - Operator rerouted traffic from the sidecar-local `localhost:15080` path to the standalone Koshi Service on port 8080 and ensured the identity header is sent on every request
 
-### Future direction
+#### Standalone availability considerations
 
-Planned sidecar config delivery would remove the need for this standalone routing handoff by allowing policy to be delivered to the existing injected sidecar. That capability is not available in the current release.
+Standalone enforcement introduces a shared traffic path through a self-hosted Koshi runtime that differs from sidecar modes:
 
-See the [enforcement mode config reference](#enforcement-mode) and the [pre-enforcement checklist](docs/kubernetes-observability.md#pre-enforcement-checklist) before switching.
+- The default chart runs a single runtime replica. Operators should evaluate replica count, resource allocation, and disruption budget for their availability requirements.
+- Scaling replicas improves availability, but does **not** provide globally shared budget state or cross-replica coordination in v1. Each replica maintains independent in-memory accounting.
+- Application traffic must be routed to the standalone deployment (e.g., via a Kubernetes Service), and callers must send the configured workload identity header.
+
+These are standard operational concerns — not blockers — but they should be considered as part of the enforcement rollout design.
+
+### Path C: Sidecar custom config via ConfigMap
+
+**When to choose:** The built-in policy presets don't fit your workload — you need operator-authored budgets, guards, or tier configurations. Custom config works in both listener and enforcement modes, so you can shadow-test custom policy before activating blocking.
+
+A sidecar with `configmap` + `policy` annotations and no `mode` annotation runs in listener mode with the custom policy (shadow decisions against custom budgets/guards). Adding `mode: "enforcement"` activates blocking.
+
+```yaml
+# Pod template annotations for custom ConfigMap sidecar
+annotations:
+  runtime.getkoshi.ai/configmap: "my-team-policy"       # required — mounts the ConfigMap
+  runtime.getkoshi.ai/policy: "team-standard"            # required — selects policy from ConfigMap
+  # runtime.getkoshi.ai/mode: "enforcement"              # optional — uncomment to activate blocking
+```
+
+**Required annotations:**
+- `runtime.getkoshi.ai/configmap: <configmap-name>` — mounts the namespace-local ConfigMap
+- `runtime.getkoshi.ai/policy: <policy-id>` — selects which policy from the ConfigMap to use (**required** when configmap is set)
+
+**Optional:**
+- `runtime.getkoshi.ai/mode: "enforcement"` — activates blocking; omit for listener mode (default)
+
+**ConfigMap contract:**
+- The ConfigMap must contain a `config.yaml` data key — the sidecar loads from `/etc/koshi-sidecar/config.yaml`
+- Do **not** define `workloads` in the ConfigMap config — the sidecar synthesizes its own workload from pod identity at startup
+- `mode.type` in the config file is ignored — mode comes from the annotation only
+- Pod restart is required after ConfigMap content changes or annotation changes
+
+**What you get:** arbitrary custom policy (operator-authored budgets, guards, tier configs) with per-pod blast radius and pod-derived identity. No routing change, no identity change.
+
+**What you don't get:** centralized budget coordination or header-based identity. For those, use standalone enforcement.
+
+See [`examples/sidecar-custom-configmap.yaml`](examples/sidecar-custom-configmap.yaml) and [`examples/sidecar-custom-deployment.yaml`](examples/sidecar-custom-deployment.yaml) for complete examples.
+
+See the [enforcement mode config reference](#enforcement-mode) and the [pre-enforcement checklist](docs/kubernetes-observability.md#pre-enforcement-checklist) before switching to standalone enforcement.
 
 ## Posture Discovery in Listener Mode
 
@@ -455,7 +532,7 @@ Each shadow outcome maps to a specific policy construct that would fire in enfor
 
 This observe-refine-repeat loop is the primary value of listener mode. Shadow decisions are not just audit data — they are the feedback signal for designing production policy.
 
-**What is not yet supported:** Custom per-workload policy for injected sidecars (custom budgets, guards, or tier configurations). The control-plane deployment supports full policy configuration via the chart ConfigMap, but that config does not propagate to injected sidecars. Sidecar-level policy customization is planned for a future release.
+**Built-in per-pod policy selection** is supported via the `runtime.getkoshi.ai/policy` annotation — choose from `sidecar-baseline`, `sidecar-strict`, or `sidecar-high-throughput` in both listener and enforcement sidecar modes. For arbitrary custom policy, use the `runtime.getkoshi.ai/configmap` annotation to mount a namespace-local ConfigMap with operator-authored budgets, guards, and tier configurations. See [Path C: Sidecar custom config via ConfigMap](#path-c-sidecar-custom-config-via-configmap).
 
 ## Architecture
 

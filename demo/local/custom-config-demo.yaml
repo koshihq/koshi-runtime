@@ -1,0 +1,77 @@
+# Demo: Custom ConfigMap sidecar policy
+#
+# This file contains a ConfigMap with a tight custom policy and a Deployment
+# that references it. Deploy after running setup.sh.
+#
+# By default the Deployment runs in listener mode with the custom policy
+# (shadow decisions against custom budgets/guards). To activate blocking,
+# uncomment the runtime.getkoshi.ai/mode annotation and re-apply.
+#
+# Usage:
+#   kubectl apply -f custom-config-demo.yaml
+#   kubectl wait --for=condition=available deploy/demo-custom-config -n default --timeout=120s
+#
+# The custom policy enforces:
+#   - 128 max tokens per request (intentionally tight for demo)
+#   - 1000 token rolling budget per 60 seconds
+#   - Tier 1: throttle, Tier 3: kill
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-custom-policy
+  namespace: default
+data:
+  # The sidecar loads from /etc/koshi-sidecar/config.yaml
+  # Do NOT define workloads — the sidecar synthesizes its own from pod identity
+  config.yaml: |
+    upstreams:
+      openai: "https://api.openai.com"
+      anthropic: "https://api.anthropic.com"
+
+    policies:
+      - id: "demo-tight"
+        budgets:
+          rolling_tokens:
+            window_seconds: 60
+            limit_tokens: 1000
+            burst_tokens: 100
+        guards:
+          max_tokens_per_request: 128
+        decision_tiers:
+          tier1_auto:
+            action: "throttle"
+          tier3_platform:
+            action: "kill_workload"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-custom-config
+  namespace: default
+  labels:
+    app: demo-custom-config
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-custom-config
+  template:
+    metadata:
+      labels:
+        app: demo-custom-config
+      annotations:
+        # Required: mount the ConfigMap and select a policy
+        runtime.getkoshi.ai/configmap: "demo-custom-policy"
+        runtime.getkoshi.ai/policy: "demo-tight"
+        # Optional: uncomment to activate blocking (enforcement mode)
+        # Without this annotation, the sidecar runs in listener mode
+        # with the custom policy — shadow decisions only, no blocking.
+        # runtime.getkoshi.ai/mode: "enforcement"
+    spec:
+      containers:
+        - name: app
+          image: curlimages/curl:latest
+          command: ["sleep", "infinity"]
+          # OPENAI_BASE_URL will be injected by the Koshi webhook
+          # pointing at http://localhost:15080

@@ -1,0 +1,59 @@
+# Example: Koshi sidecar enforcement mode with built-in policy selection
+#
+# This Deployment shows how to enable enforcement mode on an injected sidecar
+# and select a built-in policy from the sidecar policy catalog.
+#
+# Available built-in policies:
+#   sidecar-baseline (default):
+#     - 100k token rolling budget per hour (10k burst)
+#     - 4096 max tokens per request
+#     - Tier 1: throttle (HTTP 429), Tier 3: kill (HTTP 503)
+#   sidecar-strict:
+#     - 25k token rolling budget per hour (2.5k burst)
+#     - 2048 max tokens per request
+#     - Tier 1: throttle (HTTP 429), Tier 3: kill (HTTP 503)
+#   sidecar-high-throughput:
+#     - 500k token rolling budget per hour (50k burst)
+#     - 32768 max tokens per request
+#     - Tier 1: throttle (HTTP 429), no Tier 3 kill
+#
+# Identity is derived from pod metadata at admission time (same as listener
+# mode). No header injection is required.
+#
+# For arbitrary custom policies, see sidecar-custom-configmap.yaml and
+# sidecar-custom-deployment.yaml.
+#
+# Current limitations:
+#   - Budget state is per-replica, in-memory only
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-ai-workload
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-ai-workload
+  template:
+    metadata:
+      labels:
+        app: my-ai-workload
+      annotations:
+        # Enable enforcement mode. The sidecar will actively block requests
+        # that violate the selected policy.
+        # Omit this annotation (or set to "listener") for shadow-only audit
+        # mode, which is the default.
+        runtime.getkoshi.ai/mode: "enforcement"
+        # Select a built-in policy. If omitted, defaults to "sidecar-baseline".
+        # Works in both enforcement and listener sidecar modes.
+        runtime.getkoshi.ai/policy: "sidecar-strict"
+    spec:
+      containers:
+        - name: app
+          image: my-ai-app:latest
+          ports:
+            - containerPort: 8080
+          # The webhook injects OPENAI_BASE_URL and ANTHROPIC_BASE_URL
+          # pointing to the sidecar. SDKs that honor these env vars will
+          # route through Koshi automatically.

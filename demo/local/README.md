@@ -13,7 +13,7 @@ This demo creates a local kind cluster, installs Koshi in listener mode, injects
 ## What This Demo Does Not Validate
 
 - Real upstream AI provider responses — the sidecar routes to `api.openai.com` by default. Upstream responses may fail due to auth or connectivity. Demo success is based on listener events and metrics, not upstream response status.
-- Enforcement mode, custom policy, or standalone deployment — this demo is listener-only.
+- Enforcement mode, custom policy, or standalone deployment — see the optional extensions below for enforcement and custom config demos.
 
 ## Prerequisites
 
@@ -104,6 +104,126 @@ Expected metrics:
 ```bash
 curl -s http://localhost:15080/status | jq .
 ```
+
+## Optional: Demo Sidecar Enforcement
+
+This extension demonstrates live enforcement with a built-in policy. Run it after completing the listener demo above.
+
+### 1. Deploy the enforcement workload
+
+```bash
+kubectl apply -f enforcement-demo.yaml
+kubectl wait --for=condition=available deploy/demo-enforcement -n default --timeout=120s
+```
+
+### 2. Verify the sidecar is injected
+
+```bash
+kubectl get pod -l app=demo-enforcement -o jsonpath='{.items[0].spec.containers[*].name}'
+# Should include "koshi-listener"
+```
+
+### 3. Send a request that exceeds the sidecar-strict guard (max_tokens > 2048)
+
+```bash
+kubectl exec deploy/demo-enforcement -c app -- \
+  curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:15080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -H "Host: api.openai.com" \
+    -d '{"model":"gpt-4","max_tokens":4096,"messages":[{"role":"user","content":"hello"}]}'
+# Expected: 429 (throttled — guard exceeded)
+```
+
+### 4. Send a request within limits
+
+```bash
+kubectl exec deploy/demo-enforcement -c app -- \
+  curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:15080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -H "Host: api.openai.com" \
+    --connect-timeout 2 --max-time 5 \
+    -d '{"model":"gpt-4","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}'
+# Expected: 200 (or upstream error — the sidecar allowed the request)
+```
+
+### 5. Check enforcement metrics
+
+```bash
+kubectl port-forward deploy/demo-enforcement 15081:15080 &
+curl -s http://localhost:15081/metrics | grep koshi_enforcement
+```
+
+Expected metrics: `koshi_enforcement_decisions_total`, `koshi_enforcement_tokens_total`.
+
+## Optional: Demo Custom ConfigMap Policy
+
+This extension demonstrates custom operator-authored policy delivered via ConfigMap. It shows both listener (shadow) and enforcement (blocking) modes.
+
+### Part A: Custom listener (shadow with custom policy)
+
+#### 1. Deploy the ConfigMap and workload
+
+```bash
+kubectl apply -f custom-config-demo.yaml
+kubectl wait --for=condition=available deploy/demo-custom-config -n default --timeout=120s
+```
+
+The deployment has no `mode` annotation, so the sidecar runs in **listener mode** with the custom policy. Shadow decisions are computed against the custom guards and budgets, but no traffic is blocked.
+
+#### 2. Send a request that exceeds the custom guard (max_tokens > 128)
+
+```bash
+kubectl exec deploy/demo-custom-config -c app -- \
+  curl -s -X POST http://localhost:15080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -H "Host: api.openai.com" \
+    --connect-timeout 2 --max-time 5 \
+    -d '{"model":"gpt-4","max_tokens":500,"messages":[{"role":"user","content":"hello"}]}'
+```
+
+#### 3. Validate shadow event
+
+```bash
+kubectl logs deploy/demo-custom-config -c koshi-listener --tail=10 | \
+  jq 'select(.stream == "event")'
+```
+
+You should see `decision_shadow: "would_throttle"` with `reason_code: "guard_max_tokens"` — the request was proxied through, but the custom guard flagged it.
+
+### Part B: Custom enforcement (blocking with custom policy)
+
+#### 4. Add the enforcement annotation
+
+```bash
+kubectl patch deploy demo-custom-config -n default -p \
+  '{"spec":{"template":{"metadata":{"annotations":{"runtime.getkoshi.ai/mode":"enforcement"}}}}}'
+kubectl wait --for=condition=available deploy/demo-custom-config -n default --timeout=120s
+```
+
+#### 5. Send a request that exceeds the custom guard
+
+```bash
+kubectl exec deploy/demo-custom-config -c app -- \
+  curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:15080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -H "Host: api.openai.com" \
+    -d '{"model":"gpt-4","max_tokens":500,"messages":[{"role":"user","content":"hello"}]}'
+# Expected: 429 (throttled — custom guard exceeded)
+```
+
+#### 6. Send a request within custom limits
+
+```bash
+kubectl exec deploy/demo-custom-config -c app -- \
+  curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:15080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -H "Host: api.openai.com" \
+    --connect-timeout 2 --max-time 5 \
+    -d '{"model":"gpt-4","max_tokens":50,"messages":[{"role":"user","content":"hello"}]}'
+# Expected: 200 (or upstream error — the sidecar allowed the request)
+```
+
+See [`examples/sidecar-custom-configmap.yaml`](../../examples/sidecar-custom-configmap.yaml) and [`examples/sidecar-custom-deployment.yaml`](../../examples/sidecar-custom-deployment.yaml) for production-ready examples.
 
 ## Notes
 

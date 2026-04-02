@@ -9,7 +9,7 @@ This flow uses published release artifacts. No local repo checkout is required.
 ```bash
 # Install Koshi in listener mode (default)
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
-  --version 0.2.11 \
+  --version 0.2.12 \
   --namespace koshi-system --create-namespace
 
 # Opt a namespace in for sidecar injection

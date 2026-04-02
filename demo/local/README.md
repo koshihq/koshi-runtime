@@ -108,7 +108,7 @@ The local demo above uses a locally built image and a mock upstream. To use publ
 
 ```bash
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
-  --version 0.2.11 \
+  --version 0.2.12 \
   --namespace koshi-system --create-namespace
 ```
 

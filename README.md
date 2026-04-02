@@ -11,7 +11,7 @@ Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys a
 ```bash
 # 1. Install into koshi-system
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
-  --version 0.2.11 \
+  --version 0.2.12 \
   --namespace koshi-system --create-namespace
 
 # 2. Opt namespaces in — only labeled namespaces get the sidecar
@@ -233,7 +233,7 @@ make docker
 
 ```bash
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
-  --version 0.2.11 \
+  --version 0.2.12 \
   --namespace koshi-system --create-namespace
 ```
 

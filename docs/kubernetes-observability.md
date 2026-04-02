@@ -73,7 +73,7 @@ The webhook injects scrape annotations on workload pods:
 
 ```yaml
 prometheus.io/scrape: "true"
-prometheus.io/port: "15080"
+prometheus.io/port: "15080"   # Matches sidecar.port Helm value (default)
 prometheus.io/path: "/metrics"
 ```
 

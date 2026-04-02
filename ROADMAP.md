@@ -8,7 +8,7 @@ Koshi Runtime is a Kubernetes-native runtime substrate that sits at the workload
 
 - **Listener-first adoption.** Discover your governance posture at the execution boundary before enforcing it. The full enforcement pipeline runs on every request in listener mode, emitting structured events and metrics that reveal exactly where policies would intervene — without blocking traffic.
 - **Structured governance signals.** Every request produces a machine-readable decision with a stable reason code — identity resolution, policy lookup, per-request guards, rolling budget accounting, and tiered enforcement.
-- **Config-driven mode switching.** The same binary and image supports both listener and enforcement modes. Moving from observation to enforcement is a config change, not a new deployment.
+- **Config-driven mode switching.** The same binary and image supports both listener and enforcement modes. For standalone deployments, moving from observation to enforcement is a config change. For injected sidecars, enforcement and config delivery to sidecars are planned for a future release.
 - **Auditable, reversible, bounded behavior.** Reservation-first token accounting with reconciliation. Deterministic enforcement decisions. Safe defaults that fail open on infrastructure and fail closed on policy.
 
 ## Available Now
@@ -19,7 +19,7 @@ Koshi Runtime is a Kubernetes-native runtime substrate that sits at the workload
 - **Reservation-first token accounting** — budget pre-deducted before proxying, reconciled with actual usage after response. Rolling window with optional burst. Budget floor at zero.
 - **Stable reason codes** — machine-readable codes on all decisions and error responses: `identity_missing`, `policy_not_found`, `guard_max_tokens`, `budget_exhausted_throttle`, `budget_exhausted_kill`, and others.
 - **Helm chart with safe defaults** — NetworkPolicy, PodDisruptionBudget, security context (read-only root, non-root, drop all capabilities), self-signed webhook cert generation.
-- **Enforcement mode** — same binary, activated by config. Identity via HTTP header, per-workload policy binding, tiered decisions (allow, throttle, kill).
+- **Enforcement mode** — same binary, activated by config. Currently available for standalone deployments; injected-sidecar enforcement is planned. Identity via HTTP header, per-workload policy binding, tiered decisions (allow, throttle, kill).
 - **Design documentation** — formal specifications for [deterministic accounting invariants](docs/design/koshi-v1-deterministic-accounting-invariants.md), [enforcement boundary](docs/design/koshi-v1-enforcement-boundary.md), [operator trust guarantees](docs/design/koshi-v1-operator-trust-guarantees.md), and [why Koshi exists](docs/design/koshi-v1-why-koshi-exists.md).
 
 ## Next

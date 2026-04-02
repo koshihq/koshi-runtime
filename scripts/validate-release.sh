@@ -8,13 +8,13 @@ set -euo pipefail
 #   ./scripts/validate-release.sh <chart-version> <image-tag> [image-repo]
 #
 # Arguments:
-#   chart-version  Helm chart version (e.g. 1.0.0)
-#   image-tag      Image tag (e.g. v1.0.0)
+#   chart-version  Helm chart version (e.g. 0.2.12)
+#   image-tag      Image tag (e.g. v0.2.12)
 #   image-repo     Image repository (default: ghcr.io/koshihq/koshi-runtime)
 #
 # Examples:
-#   ./scripts/validate-release.sh 1.0.0 v1.0.0
-#   ./scripts/validate-release.sh 1.0.0 v1.0.0 docker.io/koshihq/koshi-runtime
+#   ./scripts/validate-release.sh 0.2.12 v0.2.12
+#   ./scripts/validate-release.sh 0.2.12 v0.2.12 docker.io/koshihq/koshi-runtime
 
 CHART_VERSION="${1:?Usage: validate-release.sh <chart-version> <image-tag> [image-repo]}"
 IMAGE_TAG="${2:?Usage: validate-release.sh <chart-version> <image-tag> [image-repo]}"

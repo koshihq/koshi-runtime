@@ -43,6 +43,7 @@ kubectl logs -n <namespace> deploy/<your-app> -c koshi-listener --tail=50 | \
 **Confirm the metrics endpoint is reachable:**
 
 ```bash
+# Default sidecar port; adjust if you changed sidecar.port in your Helm values
 kubectl port-forward -n <namespace> deploy/<your-app> 15080:15080
 curl -s http://localhost:15080/metrics | grep koshi_listener
 ```
@@ -66,7 +67,7 @@ Koshi outputs two signal types. Any observability tool that ingests these format
 - Fields: `namespace`, `workload_kind`, `workload_name`, `provider`, `decision_shadow`, `reason_code`, `estimated_tokens`, `actual_tokens`
 
 **Prometheus metrics:**
-- Source: `:15080/metrics` on each sidecar
+- Source: `/metrics` on each sidecar (default port `15080`, configurable via `sidecar.port`)
 - Series: `koshi_listener_decisions_total`, `koshi_listener_tokens_total`, `koshi_listener_latency_seconds`
 - Labels: `namespace`, `decision_shadow`, `reason_code`, `provider`, `phase`
 

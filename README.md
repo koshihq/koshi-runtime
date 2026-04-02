@@ -2,7 +2,7 @@
 
 Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys as a Kubernetes sidecar that enforces deterministic policy at the workload boundary — token budgets, per-request guards, and tiered enforcement decisions — using reservation-first accounting.
 
-**Discover your governance posture before enforcing it.** Koshi ships in **listener mode** by default: the full enforcement pipeline — identity resolution, policy lookup, guard evaluation, budget accounting — executes on every request, but no traffic is blocked. Shadow decisions (`would_reject`, `would_throttle`, `would_kill`) reveal exactly where your policies would intervene. When the posture matches your intent, enabling enforcement is a config change — same binary, same pipeline, same metrics.
+**Discover your governance posture before enforcing it.** Koshi ships in **listener mode** by default: the full enforcement pipeline — identity resolution, policy lookup, guard evaluation, budget accounting — executes on every request, but no traffic is blocked. Shadow decisions (`would_reject`, `would_throttle`, `would_kill`) reveal exactly where your policies would intervene. When the posture matches your intent, enforcement uses the same binary and Helm chart. For standalone deployments, enabling enforcement is a config change. For injected sidecars, sidecar-level enforcement is planned for a future release — see [Enabling Enforcement](#enabling-enforcement).
 
 **No repo clone required.** Install Koshi directly from the published OCI Helm chart and container image.
 
@@ -24,7 +24,7 @@ kubectl rollout restart deployment -n my-namespace
 kubectl logs -n my-namespace deploy/my-app -c koshi-listener --tail=100 | \
   jq 'select(.stream == "event")'
 
-# 5. Check metrics
+# 5. Check metrics (default sidecar port; adjust if you changed sidecar.port)
 kubectl port-forward -n my-namespace deploy/my-app 15080:15080
 curl http://localhost:15080/metrics | grep koshi_listener
 ```
@@ -34,7 +34,7 @@ curl http://localhost:15080/metrics | grep koshi_listener
 - Install Koshi in listener mode — one Helm command, no repo clone or config files required
 - Label any namespace and restart workloads to get sidecars injected
 - Collect structured JSON events from `koshi-listener` container logs
-- Scrape Prometheus metrics from `/metrics` on port `15080`
+- Scrape Prometheus metrics from `/metrics` on the sidecar port (default `15080`, configurable via `sidecar.port`)
 - Observe real shadow decisions (`allow`, `would_throttle`, `would_kill`, `would_reject`) on live traffic without blocking anything
 
 ### What Traffic Produces Signal
@@ -63,7 +63,7 @@ Workloads produce governance signal when they send OpenAI- or Anthropic-compatib
 | NetworkPolicy | `koshi-system` | Restricts injector ingress to apiserver, sidecar egress to upstreams |
 
 The sidecar (`koshi-listener`) is injected into workload pods automatically. It:
-- Listens on `:15080` (configurable)
+- Listens on `:15080` by default (configurable via `sidecar.port` Helm value)
 - Exposes `/metrics`, `/healthz`, `/readyz`, `/status`
 - Receives traffic via `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` env vars injected into app containers
 
@@ -257,7 +257,7 @@ Key Helm values:
 | Annotation | Values | Description |
 |------------|--------|-------------|
 | `runtime.getkoshi.ai/inject` | `"false"` | Opt out a specific pod from injection |
-| `runtime.getkoshi.ai/policy` | policy ID | Override the default policy for this pod's sidecar |
+| `runtime.getkoshi.ai/policy` | policy ID | Per-workload policy override. Not functional for injected sidecars in the current default install path — the built-in default config does not include named policies, so setting this annotation will cause the sidecar to fail at startup. Planned for a future release. |
 
 ## Health Endpoints
 
@@ -311,7 +311,7 @@ Listener mode is designed for discovering your governance posture. Injected side
 - **Webhook `failurePolicy: Ignore`.** If the injector is down, pods still create — they just don't get the sidecar.
 - **Base-URL injection is safe.** `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` are only set on app containers if not already present. See [What Traffic Produces Signal](#what-traffic-produces-signal) for implications when these vars are already defined.
 - **Reservation-first accounting.** Tokens are reserved before the request and reconciled with actual usage after the response.
-- **Fail open on infrastructure, fail closed on policy.** A panic triggers degraded pass-through mode. An unknown workload gets 403.
+- **Fail open on infrastructure, fail closed on policy.** A panic triggers degraded pass-through mode. In enforcement mode, an unknown workload gets 403. In listener mode, unknown workloads emit `would_reject` and traffic proxies through.
 
 ## Uninstall / Rollback
 

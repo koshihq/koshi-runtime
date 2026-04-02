@@ -536,6 +536,8 @@ This observe-refine-repeat loop is the primary value of listener mode. Shadow de
 
 ## Architecture
 
+Koshi Runtime implements the [GenOps Governance Specification](https://github.com/koshihq/genops-spec) — an open standard for AI workload governance semantics. GenOps defines the event attributes, lifecycle events, and status metadata that Koshi emits. Operators don't need to learn GenOps to use Koshi; it matters when integrating governance telemetry into broader tooling. See [GenOps Compatibility](#genops-compatibility).
+
 - **One binary, two roles.** `KOSHI_ROLE=injector` starts the admission webhook server. Default starts the proxy.
 - **No Kubernetes API calls on the request path.** Pod identity is normalized at admission time by the webhook and read from env vars by the sidecar.
 - **Webhook `failurePolicy: Ignore`.** If the injector is down, pods still create — they just don't get the sidecar. Verify sidecar presence after deployment: `kubectl get pod <pod> -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`.
@@ -581,10 +583,23 @@ For setup, evaluation, contribution, and architectural context:
 - [Enforcement Boundary](docs/design/koshi-v1-enforcement-boundary.md)
 - [Operator Trust Guarantees](docs/design/koshi-v1-operator-trust-guarantees.md)
 - [Why Koshi Exists](docs/design/koshi-v1-why-koshi-exists.md)
+- [Koshi and GenOps](docs/design/koshi-v1-genops-relationship.md)
 
 ## GenOps Compatibility
 
-Built against the [GenOps Governance Specification](https://github.com/koshihq/genops-spec). Spec version: `0.1.0`. Exposed at `GET /status` via the `genops_spec_version` field.
+**Koshi** is the runtime operators deploy. **GenOps** is the open governance specification Koshi implements — it defines the event semantics, required attributes, and interoperability surfaces that make governance data portable across tools and platforms.
+
+You do not need to read the GenOps spec to use Koshi. The spec shows up in three places:
+
+| Surface | What it provides |
+|---------|-----------------|
+| Structured events | `genops.spec.version` attribute on every event; required attribute names (`genops.accounting.*`, `genops.policy.*`, `genops.team`, etc.) |
+| `GET /status` | `genops_spec_version` field in runtime diagnostics |
+| Standalone header defaults | Default identity header name `x-genops-workload-id` follows GenOps naming conventions |
+
+**Day-one operators** can ignore GenOps entirely — Koshi handles compliance internally. **Platform teams integrating governance telemetry** into broader observability or compliance pipelines benefit from the stable, spec-defined attribute names and event structure.
+
+Spec version: `0.1.0`. Built against the [GenOps Governance Specification](https://github.com/koshihq/genops-spec). See [Koshi and GenOps](docs/design/koshi-v1-genops-relationship.md) for the full relationship.
 
 ## Development
 

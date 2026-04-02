@@ -73,6 +73,8 @@ Koshi outputs two signal types. Any observability tool that ingests these format
 
 Works with: Datadog, Splunk, Elastic, CloudWatch, Grafana stack, or any tool that ingests container JSON logs and Prometheus-format metrics.
 
+> **GenOps compatibility:** Koshi emits governance events and metadata conforming to the [GenOps Governance Specification](https://github.com/koshihq/genops-spec). You do not need to learn the GenOps spec to use Koshi — it matters mainly if you are integrating governance telemetry into broader compliance or observability tooling. See the [README GenOps section](../README.md#genops-compatibility) for details.
+
 ## Observe and Refine Policy
 
 Listener mode is a policy design sketchpad at the execution boundary. The full enforcement pipeline runs on every request in shadow mode — no traffic is blocked. Use it to observe how policy constructs intersect with real traffic and iteratively refine your intended enforcement posture.

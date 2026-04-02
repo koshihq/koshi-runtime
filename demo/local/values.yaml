@@ -1,5 +1,12 @@
-# Helm values for the local demo.
-# Uses listener mode with the mock upstream.
+# Helm values for the local demo (listener mode).
+#
+# Injected sidecars use DefaultListenerConfig() — the built-in in-memory config
+# that routes to https://api.openai.com and https://api.anthropic.com. Sidecars
+# do NOT read the chart ConfigMap. The values below (config.*) affect only the
+# control-plane ConfigMap, which is used by standalone deployments.
+#
+# This demo validates listener-sidecar injection, structured events, and metrics.
+# It does not deploy a mock upstream or override sidecar upstreams.
 
 mode: listener
 
@@ -21,8 +28,3 @@ sidecar:
     requests:
       cpu: 50m
       memory: 32Mi
-
-# NOTE: The chart's ConfigMap template (templates/configmap.yaml) uses hardcoded
-# listener config and does not template from .Values.config.
-# Upstream overrides for the local demo are applied via the mock-upstream service
-# that the ConfigMap's hardcoded upstream URLs are replaced with at deploy time.

@@ -7,6 +7,7 @@ echo "=== Tearing down Koshi demo ==="
 
 # Remove workloads.
 kubectl delete -f "$(dirname "$0")/workload.yaml" --ignore-not-found 2>/dev/null || true
+# Defensive: clean up mock-upstream if it was deployed manually.
 kubectl delete -f "$(dirname "$0")/mock-upstream.yaml" --ignore-not-found 2>/dev/null || true
 
 # Remove namespace label.

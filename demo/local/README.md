@@ -1,8 +1,19 @@
 # Local Cluster Demo
 
-This demo creates a local Kubernetes cluster with kind, installs Koshi in listener mode, deploys a mock upstream and sample workload, sends synthetic traffic, and validates structured events and metrics.
+This demo creates a local kind cluster, installs Koshi in listener mode, injects a sidecar into a sample workload, sends synthetic traffic, and validates that structured events and Prometheus metrics are emitted by the listener sidecar.
 
 > **This demo is for local development and validation only.** It requires a repo checkout, a local Docker build, and a kind cluster. To install Koshi on a real cluster using published artifacts, see [Koshi Onboarding](../../docs/onboarding.md).
+
+## What This Demo Validates
+
+- Sidecar injection via the mutating admission webhook
+- Structured governance events (`stream: "event"`) emitted by the listener
+- Prometheus metrics (`koshi_listener_*`) exposed by the sidecar
+
+## What This Demo Does Not Validate
+
+- Real upstream AI provider responses — the sidecar routes to `api.openai.com` by default. Upstream responses may fail due to auth or connectivity. Demo success is based on listener events and metrics, not upstream response status.
+- Enforcement mode, custom policy, or standalone deployment — this demo is listener-only.
 
 ## Prerequisites
 
@@ -40,33 +51,32 @@ helm install koshi ../../deploy/helm/koshi/ \
   -f values.yaml
 ```
 
-### 3. Deploy the mock upstream
-
-The mock upstream returns OpenAI-shaped responses with token usage data:
-
-```bash
-kubectl apply -f mock-upstream.yaml
-```
-
-### 4. Label the namespace and deploy a workload
+### 3. Label the namespace and deploy a workload
 
 ```bash
 kubectl label namespace default runtime.getkoshi.ai/inject=true
 kubectl apply -f workload.yaml
+kubectl wait --for=condition=available deploy/demo-workload -n default --timeout=120s
 ```
 
-### 5. Wait for pods and send traffic
+### 4. Verify sidecar injection
 
 ```bash
-kubectl wait --for=condition=ready pod -l app=demo-workload -n default --timeout=120s
+kubectl get pod -l app=demo-workload -o jsonpath='{.items[0].spec.containers[*].name}'
+# Should include "koshi-listener"
+```
 
-# Send a few requests through the sidecar
+### 5. Send synthetic traffic
+
+```bash
 kubectl exec deploy/demo-workload -c app -- \
   curl -s -X POST http://localhost:15080/v1/chat/completions \
     -H "Content-Type: application/json" \
     -H "Host: api.openai.com" \
     -d '{"model":"gpt-4","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}'
 ```
+
+The sidecar routes to `api.openai.com` by default. Upstream responses may fail due to auth or connectivity — the listener emits structured events and metrics before upstream proxying, so failures do not affect demo validation. The setup script bounds request time (`--connect-timeout 2 --max-time 5`) for the same reason.
 
 ### 6. Validate structured events
 
@@ -75,7 +85,7 @@ kubectl logs deploy/demo-workload -c koshi-listener --tail=50 | \
   jq 'select(.stream == "event")'
 ```
 
-You should see events with `decision_shadow: "allow"` and shadow fields like `namespace`, `workload_kind`, `provider`.
+You should see events with `decision_shadow` and fields like `namespace`, `workload_kind`, `provider`.
 
 ### 7. Check metrics
 
@@ -95,16 +105,13 @@ Expected metrics:
 curl -s http://localhost:15080/status | jq .
 ```
 
-## What to Look For
+## Notes
 
-- **Events with `"stream": "event"`** — these are the structured governance events
-- **`decision_shadow: "allow"`** — traffic is flowing and passing all checks
-- **`koshi_listener_decisions_total`** — Prometheus counter with namespace and shadow decision labels
-- **No 403/429/503 responses** — listener mode never blocks traffic
+`mock-upstream.yaml` is retained in this directory but is not part of the default demo flow. Injected sidecars use `DefaultListenerConfig()`, which routes to real AI provider APIs — the mock upstream is not reachable without overriding sidecar upstream routing, which is not supported for injected sidecars in the current release.
 
 ## Using Released Artifacts
 
-The local demo above uses a locally built image and a mock upstream. To use published artifacts on a real cluster with real AI API providers:
+To use published artifacts on a real cluster with real AI API providers:
 
 ```bash
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
@@ -112,9 +119,7 @@ helm install koshi oci://ghcr.io/koshihq/charts/koshi \
   --namespace koshi-system --create-namespace
 ```
 
-Injected sidecars use the built-in default listener config, which routes traffic to `https://api.openai.com` and `https://api.anthropic.com`. The mock-upstream flow in this demo is for local development only — it is not part of the released-artifact validation path.
-
-For partner onboarding on a real cluster, see [Koshi Onboarding](../../docs/onboarding.md).
+For onboarding on a real cluster, see [Koshi Onboarding](../../docs/onboarding.md).
 
 ## Cleanup
 

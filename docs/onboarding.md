@@ -112,35 +112,54 @@ See [Kubernetes Observability Guide](kubernetes-observability.md) for detailed P
 
 ## From Listener Audit to Standalone Enforcement
 
-Moving from sidecar listener audits to live enforcement is a **deployment-model handoff**. Injected sidecars use the built-in default listener config and do not read the chart ConfigMap, so enforcement requires deploying Koshi as a standalone service.
+Moving from sidecar listener audits to live enforcement is a **deployment-model handoff** — not a config change. This section walks through what changes, what you need to build, and what to watch out for.
 
-### What your audit tells you
+### What your audit gives you
 
 Your listener audit produces the raw inputs for enforcement policy:
 
-- **Workload inventory:** which `namespace` / `workload_kind` / `workload_name` tuples appear in events
+- **Workload inventory:** which `namespace` / `workload_kind` / `workload_name` tuples appear in structured events
 - **Token pressure:** `koshi_listener_tokens_total` by namespace and provider shows consumption patterns
 - **Policy boundary fit:** shadow outcomes (`would_throttle`, `would_kill`) show where the default policy is tighter than real usage
 - **Identity coverage:** `would_reject` + `identity_missing` events show where identity injection failed
 
-### Translating audit findings into enforcement config
+### Policy: map audit findings into standalone config
 
-1. **Map observed workloads to `workloads` entries.** Each workload from your audit becomes an explicit entry with an `id`, `identity.mode: "header"`, and `policy_refs`.
-2. **Choose your identity header.** Standalone enforcement uses `HeaderResolver` — callers must send a workload identity header (default: `x-genops-workload-id`) on each request. Your API gateway or application code is responsible for setting this.
-3. **Define named `policies`.** Use the token pressure and shadow outcomes from your audit to set appropriate `limit_tokens`, `window_seconds`, `max_tokens_per_request`, and tier actions.
-4. **Route traffic through the standalone deployment.** Point application HTTP clients at the Koshi service instead of directly at AI provider APIs.
+- [ ] Map each observed workload into an explicit `workloads` entry with `id`, `identity.mode: "header"`, and `policy_refs`
+- [ ] Define named `policies` with `limit_tokens`, `window_seconds`, `max_tokens_per_request`, and tier actions — use shadow outcomes to inform appropriate limits
+- [ ] Attach `policy_refs` to each workload entry
+- [ ] This is a manual translation — audit results do not automatically become enforcement config
 
 See the [README enforcement mode config reference](../README.md#enforcement-mode) for the full config shape.
 
-### Operational considerations
+### Identity: switch from pod metadata to header-based resolution
 
-- Standalone enforcement introduces a centralized traffic path. The default chart runs a single replica — evaluate your availability requirements.
-- Scaling replicas improves availability, but budget state is per-replica in v1 (no cross-replica coordination).
-- Review the [pre-enforcement checklist](kubernetes-observability.md#pre-enforcement-checklist) before activating.
+- [ ] Sidecar audits used pod-derived identity (`namespace`, `workload_kind`, `workload_name`). Standalone enforcement uses `HeaderResolver`.
+- [ ] Choose a deployment-wide identity header key (default: `x-genops-workload-id`)
+- [ ] Ensure application code, SDK wrapper, API gateway, or service mesh sends the identity header on every request
+- [ ] In v1, all header-mode workloads share the same identity key — plan your header convention accordingly
 
-### What is planned but not available today
+### Traffic: reroute from sidecar-local to standalone service
 
-Sidecar config delivery and in-place sidecar enforcement are planned for the open runtime. Until then, the path from audit to enforcement is a deployment-model handoff, not a sidecar config flip.
+- [ ] Sidecar listener mode redirected traffic locally to `localhost`. Standalone enforcement requires routing through a Kubernetes Service.
+- [ ] Point application HTTP clients at the standalone Koshi service instead of AI provider APIs
+- [ ] For workloads moving to standalone, remove the sidecar injection namespace label and restart workloads
+- [ ] The path to enforcement is "move traffic from sidecar-local routing to standalone routing" — not "flip the same sidecars to enforcement mode"
+
+### Rollout risk
+
+This handoff is a traffic-path change, not just a config change:
+
+- Standalone introduces a **centralized dependency** — all routed traffic shares one deployment, unlike per-pod sidecars
+- **Blast radius is wider** — a misconfiguration affects all workloads routed through the standalone service
+- **Rollback requires restoring the old traffic path** (re-label namespace, restart workloads), not just changing a mode flag
+- **Recommendation:** start with a narrow subset of workloads. Keep a clear rollback path — the sidecar listener namespace label can be re-applied and workloads restarted to restore the audit-only posture.
+
+Review the [pre-enforcement checklist](kubernetes-observability.md#pre-enforcement-checklist) before activating.
+
+### Why future sidecar config delivery is relevant
+
+Planned sidecar config delivery would allow enforcement to run in the same per-pod sidecar that already handles listener audits — same traffic path, same identity model, same blast radius. The routing cutover to a shared standalone service would no longer be required. Until then, the handoff described above is the current path.
 
 ## Next Steps
 

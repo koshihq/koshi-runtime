@@ -305,15 +305,48 @@ These are standard operational concerns — not blockers — but they should be 
 
 ## From Audit to Enforcement
 
-Enforcement mode uses the same binary and Helm chart but changes how identity is resolved and how decisions are acted on. Moving from sidecar listener audits to standalone enforcement involves translating audit findings into enforcement config:
+Moving from sidecar listener audits to standalone enforcement is not a config change — it is a deployment-model handoff involving three distinct transitions and one operational risk that should be planned for explicitly.
 
-1. **Observed workloads become explicit `workloads` entries.** Each workload that appeared in your listener audit gets an `id`, `identity.mode: "header"`, and `policy_refs`.
-2. **Choose the identity header key.** Standalone enforcement resolves identity from an HTTP header (`HeaderResolver`), not pod metadata. The default key is `x-genops-workload-id`. Your application or API gateway must send this header on each request.
-3. **Convert the validated listener baseline into named `policies`.** Shadow outcomes from your audit tell you what budget limits, guards, and tier configurations are appropriate.
-4. **Attach `policy_refs` to workloads.** Bind each workload to one or more named policies.
-5. **Deploy Koshi as a standalone service** and route application traffic through it.
+### Policy transition
 
-This is currently a **manual policy operationalization step**, not an automatic migration.
+Listener audit results do not automatically become production policies. The handoff requires manual policy operationalization:
+
+- Observed workloads from sidecar events (`namespace`, `workload_kind`, `workload_name` tuples) must be mapped into explicit `workloads` entries with an `id`, `identity.mode: "header"`, and `policy_refs`.
+- Operators must define named `policies` with budget limits, guards, and tier actions informed by shadow outcomes from the audit — but the translation is manual, not automated.
+- `policy_refs` must be attached to each workload entry to bind it to the appropriate policies.
+- Shadow outcomes like `would_throttle` and `would_kill` inform what limits are appropriate, but they do not generate policy config.
+
+### Identity transition
+
+Sidecar listener audits resolve identity from pod metadata injected by the webhook at admission time (`namespace`, `workload_kind`, `workload_name`). Standalone enforcement uses a different identity model:
+
+- Standalone enforcement uses `HeaderResolver` — identity comes from an HTTP header, not pod metadata.
+- Operators must choose a deployment-wide identity header key (default: `x-genops-workload-id`).
+- Application code, SDK wrapper, API gateway, or service mesh must send that header on every request routed through the standalone deployment.
+- In v1, all header-mode workloads share the same identity key — this is a real implementation constraint, not a configuration default.
+
+### Traffic transition
+
+Sidecar listener mode works because the webhook redirects app traffic locally to the sidecar on `localhost`. Standalone enforcement requires a fundamentally different traffic path:
+
+- Application HTTP clients must be pointed at the standalone Koshi service (e.g., via a Kubernetes Service) instead of directly at AI provider APIs.
+- For workloads being moved to standalone enforcement, the injected sidecar path should be removed or bypassed — this typically means removing the namespace label and restarting workloads.
+- The path to enforcement today is not "flip the same sidecars to enforcement mode" but "move traffic from sidecar-local routing to standalone routing."
+
+### Routing cutover risk
+
+This handoff is a traffic-path change, not just a policy or config change. That introduces more operational risk than sidecar listener audits:
+
+- **Centralized dependency:** all routed traffic shares one standalone deployment, unlike per-pod sidecars.
+- **Wider blast radius:** a misconfiguration or outage affects all workloads routed through the standalone service.
+- **Routing misconfiguration risk:** incorrect Service targets, missing identity headers, or DNS issues can silently drop or misroute traffic.
+- **Rollback is not a mode flag:** restoring the previous state means re-enabling sidecar injection and restarting workloads, not changing a config value.
+
+**Recommendation:** roll out standalone enforcement with a narrow subset of workloads first. Keep a clear rollback path — the sidecar listener namespace label can be re-applied and workloads restarted to restore the audit-only posture.
+
+### Why future sidecar config delivery reduces this risk
+
+Planned sidecar config delivery would allow policy to be delivered directly to the existing workload-boundary sidecar — the same runtime that already handles listener audits. This would make the path from audit to enforcement more continuous: same traffic path, same identity model, same per-pod blast radius. The routing cutover to a shared standalone service would no longer be required for most workloads.
 
 See the [enforcement mode config reference](#enforcement-mode) and the [pre-enforcement checklist](docs/kubernetes-observability.md#pre-enforcement-checklist) before switching.
 

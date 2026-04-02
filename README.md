@@ -289,13 +289,13 @@ Koshi supports two deployment models today. They serve different purposes and ha
 
 2. **Validate** — use shadow outcomes, identity coverage, and token pressure to finalize policy intent. See [Posture Discovery](#posture-discovery-in-listener-mode) and the [pre-enforcement checklist](docs/kubernetes-observability.md#pre-enforcement-checklist).
 
-3. **Enforce** — operationalize live blocking through a standalone Koshi deployment. This is a **deployment-model handoff**, not an in-place sidecar config flip. See [From Audit to Enforcement](#from-audit-to-enforcement) and the [onboarding guide](docs/onboarding.md#from-listener-audit-to-standalone-enforcement) for concrete steps.
+3. **Enforce** — operationalize live blocking through a self-hosted standalone Koshi runtime (in Kubernetes, typically a Deployment exposed via a Service). This is a **deployment-model handoff**, not an in-place sidecar config flip. See [From Audit to Enforcement](#from-audit-to-enforcement) and the [onboarding guide](docs/onboarding.md#from-listener-audit-to-standalone-enforcement) for concrete steps.
 
-**Why the handoff?** Injected sidecars use the built-in default listener config and do not read the chart ConfigMap. Sidecar config delivery and in-place sidecar enforcement are planned for a future release. Until then, moving from audit to enforcement means deploying Koshi as a standalone service and routing application traffic through it.
+**Why the handoff?** Injected sidecars use the built-in default listener config and do not read the chart ConfigMap. Sidecar config delivery and in-place sidecar enforcement are planned for a future release. Until then, moving from audit to enforcement means deploying Koshi as a self-hosted standalone runtime and routing application traffic through it.
 
 ### Standalone Availability Considerations
 
-Standalone enforcement introduces a centralized traffic path that differs from sidecar listener mode:
+Standalone enforcement introduces a shared traffic path through a self-hosted Koshi runtime that differs from sidecar listener mode:
 
 - The default chart runs a single runtime replica. Operators should evaluate replica count, resource allocation, and disruption budget for their availability requirements.
 - Scaling replicas improves availability, but does **not** provide globally shared budget state or cross-replica coordination in v1. Each replica maintains independent in-memory accounting.
@@ -327,22 +327,22 @@ Sidecar listener audits resolve identity from pod metadata injected by the webho
 
 ### Traffic transition
 
-Sidecar listener mode works because the webhook redirects app traffic locally to the sidecar on `localhost`. Standalone enforcement requires a fundamentally different traffic path:
+Sidecar listener mode works because the webhook redirects app traffic locally to the sidecar on `localhost`. Standalone enforcement routes traffic through a self-hosted Koshi runtime (in Kubernetes, exposed via a Service) — a fundamentally different traffic path:
 
-- Application HTTP clients must be pointed at the standalone Koshi service (e.g., via a Kubernetes Service) instead of directly at AI provider APIs.
+- Application HTTP clients must be pointed at the standalone Koshi runtime (e.g., via a Kubernetes Service) instead of directly at AI provider APIs.
 - For workloads being moved to standalone enforcement, the injected sidecar path should be removed or bypassed — this typically means removing the namespace label and restarting workloads.
 - The path to enforcement today is not "flip the same sidecars to enforcement mode" but "move traffic from sidecar-local routing to standalone routing."
 
-### Routing cutover risk
+### Rollout considerations
 
-This handoff is a traffic-path change, not just a policy or config change. That introduces more operational risk than sidecar listener audits:
+This handoff is a traffic-path change, not just a policy or config change. Operators should plan for:
 
-- **Centralized dependency:** all routed traffic shares one standalone deployment, unlike per-pod sidecars.
-- **Wider blast radius:** a misconfiguration or outage affects all workloads routed through the standalone service.
-- **Routing misconfiguration risk:** incorrect Service targets, missing identity headers, or DNS issues can silently drop or misroute traffic.
-- **Rollback is not a mode flag:** restoring the previous state means re-enabling sidecar injection and restarting workloads, not changing a config value.
+- **Shared enforcement path:** all routed traffic flows through a self-hosted Koshi runtime, unlike per-pod sidecars where each workload has its own listener instance.
+- **Broader-scope traffic change:** a misconfiguration in the standalone runtime or its routing (e.g., Kubernetes Service) affects all workloads routed through it, so testing with a narrow subset first is worthwhile.
+- **Traffic cutover coordination:** incorrect routing targets, missing identity headers, or DNS issues can misroute traffic. Validate connectivity before shifting production workloads.
+- **Rollback path:** restoring the previous state means re-enabling sidecar injection and restarting workloads, not changing a config value. Plan this path before cutting over.
 
-**Recommendation:** roll out standalone enforcement with a narrow subset of workloads first. Keep a clear rollback path — the sidecar listener namespace label can be re-applied and workloads restarted to restore the audit-only posture.
+**Recommendation:** start with a small number of workloads. The sidecar listener namespace label can be re-applied and workloads restarted to restore the audit-only posture at any time.
 
 ### Worked example: one audited workload to standalone enforcement
 
@@ -431,21 +431,29 @@ See the [enforcement mode config reference](#enforcement-mode) and the [pre-enfo
 
 ## Posture Discovery in Listener Mode
 
-Listener mode is designed for discovering your governance posture. Injected sidecars evaluate every AI API request against the built-in default policy and emit shadow decisions. This reveals:
+Listener mode is a policy design sketchpad at the execution boundary. The full enforcement pipeline runs on every AI API request, but decisions are shadow-only — no traffic is blocked. This lets operators observe how specific policy constructs would interact with real traffic before committing to enforcement.
 
-- Which workloads generate AI API traffic and at what volume
-- Where the default policy boundary sits relative to real usage patterns
-- Whether workload identity is resolving correctly across namespaces
+### How shadow decisions relate to policy design
 
-**Interpreting shadow outcomes as coverage signals:**
+Each shadow outcome maps to a specific policy construct that would fire in enforcement mode:
 
-| Shadow outcome | What it means |
-|---|---|
-| `allow` | Request passed all checks under the built-in policy |
-| `would_throttle` | Built-in budget or guard is tighter than this workload's traffic pattern |
-| `would_kill` | Severe budget pressure under the built-in policy |
-| `would_reject` + `identity_missing` | Sidecar couldn't resolve workload identity — check webhook injection |
-| `would_reject` + `policy_not_found` | No usable policy context — relevant when explicit workload mappings are configured without a default fallback |
+| Shadow outcome | Policy construct tested | What to refine |
+|---|---|---|
+| `allow` | All checks passed | Baseline posture is acceptable for this traffic pattern |
+| `would_throttle` + `guard_max_tokens` | `guards.max_tokens_per_request` | Per-request token guard is tighter than this workload's actual request sizes |
+| `would_throttle` + `budget_exhausted_throttle` | `budgets.rolling_tokens.limit_tokens` / `window_seconds` | Rolling budget is tighter than this workload's sustained consumption rate |
+| `would_kill` + `budget_exhausted_kill` | `decision_tiers.tier3_platform.action: "kill_workload"` | Severe budget pressure — review whether consumption is expected or the budget needs widening |
+| `would_reject` + `identity_missing` | Identity resolution (webhook injection) | Sidecar couldn't resolve workload identity — check that the webhook is injecting env vars |
+| `would_reject` + `policy_not_found` | Policy lookup | No usable policy context — relevant when explicit workload mappings are configured without a default fallback |
+
+### Iterative refinement workflow
+
+1. **Observe** — collect shadow decisions on live traffic. Start with the built-in default listener policy.
+2. **Identify pressure points** — which `reason_code` values appear most? Which namespaces or workloads generate `would_throttle` or `would_kill`?
+3. **Refine policy intent** — use the shadow outcomes to decide what guard limits, budget windows, and tier actions are appropriate for each workload class.
+4. **Repeat** — continue observing until the shadow posture matches your intended enforcement posture. The goal is to reach a state where the shadow outcomes are what you *want* enforcement to produce.
+
+This observe-refine-repeat loop is the primary value of listener mode. Shadow decisions are not just audit data — they are the feedback signal for designing production policy.
 
 **What is not yet supported:** Custom per-workload policy for injected sidecars (custom budgets, guards, or tier configurations). The control-plane deployment supports full policy configuration via the chart ConfigMap, but that config does not propagate to injected sidecars. Sidecar-level policy customization is planned for a future release.
 

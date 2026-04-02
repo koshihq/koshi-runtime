@@ -73,25 +73,31 @@ Koshi outputs two signal types. Any observability tool that ingests these format
 
 Works with: Datadog, Splunk, Elastic, CloudWatch, Grafana stack, or any tool that ingests container JSON logs and Prometheus-format metrics.
 
-## Observe Baseline Posture
+## Observe and Refine Policy
 
-Injected sidecars use the built-in default listener policy automatically. With normal traffic, expect mostly `allow` outcomes. This baseline reveals:
+Listener mode is a policy design sketchpad at the execution boundary. The full enforcement pipeline runs on every request in shadow mode — no traffic is blocked. Use it to observe how policy constructs intersect with real traffic and iteratively refine your intended enforcement posture.
 
-- Which workloads generate AI API traffic
-- What volume of tokens they consume
-- Whether workload identity is being resolved correctly
+### Shadow decisions as policy feedback
 
-Shadow outcomes like `would_throttle` indicate the built-in budget or guard is tighter than a workload's actual traffic pattern. This is expected and informative — it shows where the default policy boundary sits relative to real usage.
+Each shadow outcome maps to a specific policy construct:
 
-## Interpret Shadow Outcomes
-
-| Shadow outcome | What it means | What to investigate |
+| Shadow outcome | Policy construct tested | What to refine |
 |---|---|---|
-| `allow` | Request passed all checks | Baseline posture is acceptable for this traffic |
-| `would_throttle` | Budget or guard exceeded | Compare workload traffic volume against the built-in policy limits |
-| `would_kill` | Severe budget pressure | Review whether this workload's token consumption is expected |
-| `would_reject` + `identity_missing` | Identity not resolved | Check that the webhook is injecting identity env vars |
-| `would_reject` + `policy_not_found` | No usable policy context | Relevant when explicit workload mappings are configured without a default fallback |
+| `allow` | All checks passed | Baseline acceptable for this traffic |
+| `would_throttle` + `guard_max_tokens` | `guards.max_tokens_per_request` | Per-request guard tighter than actual request sizes |
+| `would_throttle` + `budget_exhausted_throttle` | `budgets.rolling_tokens` | Rolling budget tighter than sustained consumption |
+| `would_kill` + `budget_exhausted_kill` | `decision_tiers.tier3_platform` | Severe budget pressure — review consumption or widen budget |
+| `would_reject` + `identity_missing` | Identity resolution | Webhook not injecting identity env vars — check injection |
+| `would_reject` + `policy_not_found` | Policy lookup | No usable policy context — add default or explicit mapping |
+
+### Refinement workflow
+
+1. **Observe** — collect shadow decisions on live traffic with the built-in default listener policy
+2. **Identify pressure points** — which `reason_code` values appear? Which namespaces or workloads show `would_throttle` / `would_kill`?
+3. **Refine policy intent** — decide what guard limits, budget windows, and tier actions are appropriate for each workload class
+4. **Repeat** — continue until shadow posture matches your intended enforcement posture
+
+This loop is the primary value of listener mode. Shadow decisions are the feedback signal for designing production policy.
 
 ## Current Scope
 
@@ -139,21 +145,21 @@ See the [README enforcement mode config reference](../README.md#enforcement-mode
 - [ ] Ensure application code, SDK wrapper, API gateway, or service mesh sends the identity header on every request
 - [ ] In v1, all header-mode workloads share the same identity key — plan your header convention accordingly
 
-### Traffic: reroute from sidecar-local to standalone service
+### Traffic: reroute from sidecar-local to standalone runtime
 
-- [ ] Sidecar listener mode redirected traffic locally to `localhost`. Standalone enforcement requires routing through a Kubernetes Service.
-- [ ] Point application HTTP clients at the standalone Koshi service instead of AI provider APIs
+- [ ] Sidecar listener mode redirected traffic locally to `localhost`. Standalone enforcement requires routing through the self-hosted Koshi runtime (in Kubernetes, exposed via a Service — not a third-party hosted endpoint).
+- [ ] Point application HTTP clients at the standalone Koshi runtime instead of AI provider APIs
 - [ ] For workloads moving to standalone, remove the sidecar injection namespace label and restart workloads
 - [ ] The path to enforcement is "move traffic from sidecar-local routing to standalone routing" — not "flip the same sidecars to enforcement mode"
 
-### Rollout risk
+### Rollout considerations
 
 This handoff is a traffic-path change, not just a config change:
 
-- Standalone introduces a **centralized dependency** — all routed traffic shares one deployment, unlike per-pod sidecars
-- **Blast radius is wider** — a misconfiguration affects all workloads routed through the standalone service
-- **Rollback requires restoring the old traffic path** (re-label namespace, restart workloads), not just changing a mode flag
-- **Recommendation:** start with a narrow subset of workloads. Keep a clear rollback path — the sidecar listener namespace label can be re-applied and workloads restarted to restore the audit-only posture.
+- [ ] All routed traffic flows through a **shared self-hosted Koshi runtime** — test with a narrow subset of workloads before shifting production traffic
+- [ ] A misconfiguration in the standalone runtime or its routing affects all workloads routed through it — validate connectivity first
+- [ ] Rollback means re-enabling sidecar injection and restarting workloads, not changing a mode flag — plan this path before cutting over
+- [ ] **Recommendation:** start small, keep a clear rollback path. The sidecar listener namespace label can be re-applied at any time.
 
 Review the [pre-enforcement checklist](kubernetes-observability.md#pre-enforcement-checklist) before activating.
 

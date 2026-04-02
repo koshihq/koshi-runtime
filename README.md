@@ -1,6 +1,6 @@
 # Koshi Runtime
 
-Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys as a Kubernetes sidecar that enforces deterministic policy at the workload boundary — token budgets, per-request guards, and tiered enforcement decisions — using reservation-first accounting. The sidecar supports three operating shapes: listener audit (shadow-only, default), enforcement with built-in policy presets, and enforcement with operator-authored custom policy delivered via namespace-local ConfigMap. A standalone deployment model is available for centralized enforcement with header-based identity.
+Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys as a Kubernetes sidecar that enforces deterministic policy at the workload boundary — token budgets, per-request guards, and tiered enforcement decisions — using reservation-first accounting. The sidecar supports three operating shapes: listener audit (shadow-only, default), enforcement with built-in policy presets, and operator-authored custom policy via namespace-local ConfigMap (works in both listener and enforcement modes). A standalone deployment model is available for centralized enforcement with header-based identity.
 
 **Discover your governance posture before enforcing it.** Koshi ships in **listener mode** by default: the full enforcement pipeline — identity resolution, policy lookup, guard evaluation, budget accounting — executes on every request, but no traffic is blocked. Shadow decisions (`would_reject`, `would_throttle`, `would_kill`) reveal exactly where your policies would intervene. When the posture matches your intent, activate enforcement on the same sidecar — choose built-in policy presets via the `runtime.getkoshi.ai/policy` annotation, or deliver custom policy via a namespace-local ConfigMap (`runtime.getkoshi.ai/configmap`). Both work with a single annotation change and a pod restart. See [From Audit to Enforcement](#from-audit-to-enforcement).
 
@@ -538,7 +538,7 @@ This observe-refine-repeat loop is the primary value of listener mode. Shadow de
 
 - **One binary, two roles.** `KOSHI_ROLE=injector` starts the admission webhook server. Default starts the proxy.
 - **No Kubernetes API calls on the request path.** Pod identity is normalized at admission time by the webhook and read from env vars by the sidecar.
-- **Webhook `failurePolicy: Ignore`.** If the injector is down, pods still create — they just don't get the sidecar.
+- **Webhook `failurePolicy: Ignore`.** If the injector is down, pods still create — they just don't get the sidecar. Verify sidecar presence after deployment: `kubectl get pod <pod> -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`.
 - **Base-URL injection is safe.** `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` are only set on app containers if not already present. See [What Traffic Produces Signal](#what-traffic-produces-signal) for implications when these vars are already defined.
 - **Reservation-first accounting.** Tokens are reserved before the request and reconciled with actual usage after the response.
 - **Fail open on infrastructure, fail closed on policy.** A panic triggers degraded pass-through mode. In enforcement mode, an unknown workload gets 403. In listener mode, unknown workloads emit `would_reject` and traffic proxies through.

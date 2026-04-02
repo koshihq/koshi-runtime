@@ -161,6 +161,17 @@ jobs:
           RAW_TAG="${{ steps.versions.outputs.RAW_TAG }}"
           SEMVER="${{ steps.versions.outputs.SEMVER }}"
           cat > /tmp/release-notes.md <<NOTES
+          ## What's New
+
+          - **Sidecar enforcement** — activate live enforcement on injected sidecars via the \`runtime.getkoshi.ai/mode: "enforcement"\` pod annotation. No routing change, no identity change, per-pod blast radius.
+          - **Built-in policy selection** — choose from \`sidecar-baseline\`, \`sidecar-strict\`, or \`sidecar-high-throughput\` via the \`runtime.getkoshi.ai/policy\` annotation. Works in both listener and enforcement modes.
+          - **Custom sidecar policy via ConfigMap** — deliver operator-authored budgets, guards, and tier configurations via a namespace-local ConfigMap (\`runtime.getkoshi.ai/configmap\`). Works in both listener and enforcement modes.
+          - **Local demo ladder** — the demo walkthrough now shows the full listener-to-enforcement transition, including built-in enforcement and custom ConfigMap paths.
+
+          Standalone enforcement remains available for centralized coordination, header-based identity, or shared enforcement points — but sidecars are now the primary enforcement path.
+
+          See [README](https://github.com/koshihq/koshi-runtime#from-audit-to-enforcement) for the full adoption path and [examples/](https://github.com/koshihq/koshi-runtime/tree/main/examples) for ready-to-use manifests.
+
           ## Install
 
           **Image (GHCR — canonical):**
@@ -181,7 +192,7 @@ jobs:
 
           ### Validate
 
-          See [local demo walkthrough](https://github.com/koshihq/koshi-runtime/tree/main/demo/local) for a kind-based validation flow.
+          See [local demo walkthrough](https://github.com/koshihq/koshi-runtime/tree/main/demo/local) for a kind-based validation flow covering listener audit, built-in enforcement, and custom ConfigMap policy.
           NOTES
 
       - name: Create GitHub Release

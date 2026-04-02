@@ -187,7 +187,7 @@ kubectl port-forward deploy/demo-workload 15081:15080 &
 curl -s http://localhost:15081/metrics | grep koshi_enforcement
 ```
 
-Expected metrics: `koshi_enforcement_decisions_total`, `koshi_enforcement_tokens_total`.
+Expected metrics: `koshi_enforcement_decisions_total`, `koshi_tokens_used_total`.
 
 ### 7. Reset to listener mode
 

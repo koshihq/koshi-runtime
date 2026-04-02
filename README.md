@@ -344,9 +344,88 @@ This handoff is a traffic-path change, not just a policy or config change. That 
 
 **Recommendation:** roll out standalone enforcement with a narrow subset of workloads first. Keep a clear rollback path — the sidecar listener namespace label can be re-applied and workloads restarted to restore the audit-only posture.
 
-### Why future sidecar config delivery reduces this risk
+### Worked example: one audited workload to standalone enforcement
 
-Planned sidecar config delivery would allow policy to be delivered directly to the existing workload-boundary sidecar — the same runtime that already handles listener audits. This would make the path from audit to enforcement more continuous: same traffic path, same identity model, same per-pod blast radius. The routing cutover to a shared standalone service would no longer be required for most workloads.
+**Listener audit observed:**
+
+```
+namespace:        "prod"
+workload_kind:    "Deployment"
+workload_name:    "payments-api"
+provider:         "openai"
+decision_shadow:  "would_throttle"
+reason_code:      "guard_max_tokens"
+```
+
+**Standalone enforcement config:**
+
+```yaml
+mode:
+  type: "enforcement"
+
+upstreams:
+  openai: "https://api.openai.com"
+
+workloads:
+  - id: "prod/payments-api"
+    type: "service"
+    owner_team: "payments"
+    environment: "production"
+    identity:
+      mode: "header"
+      key: "x-genops-workload-id"
+    model_targets:
+      - provider: "openai"
+        model: "gpt-4"
+    policy_refs:
+      - "payments-standard"
+
+policies:
+  - id: "payments-standard"
+    budgets:
+      rolling_tokens:
+        window_seconds: 300
+        limit_tokens: 250000
+        burst_tokens: 10000
+    guards:
+      max_tokens_per_request: 8192
+    decision_tiers:
+      tier1_auto:
+        action: "throttle"
+      tier3_platform:
+        action: "kill_workload"
+```
+
+**Traffic and identity change:**
+
+```bash
+# Before: sidecar listener audit (webhook-injected env var)
+OPENAI_BASE_URL=http://localhost:15080
+
+# After: standalone enforcement (operator-configured)
+OPENAI_BASE_URL=http://koshi-koshi.koshi-system.svc.cluster.local:8080
+# Identity header sent on every request:
+X-GenOps-Workload-Id: prod/payments-api
+```
+
+**What happened in this example:**
+
+Fields derived from the listener audit:
+- `namespace`, `workload_kind`, `workload_name`, `provider` — observed directly in structured events
+- `decision_shadow: "would_throttle"` + `reason_code: "guard_max_tokens"` — informed the operator that per-request token limits needed attention
+
+Fields chosen by the operator (not in audit output):
+- Standalone workload ID convention (`prod/payments-api`) — operator decision
+- `type`, `owner_team`, `environment` — organizational metadata, not present in audit events
+- Identity header key (`x-genops-workload-id`) — operator choice (in v1, all header-mode workloads must share the same key, enforced by config validation)
+- Policy budget and guard values (`limit_tokens: 250000`, `max_tokens_per_request: 8192`) — operator decision informed by audit pressure, not a direct translation from built-in listener defaults
+
+Traffic change:
+- Operator rerouted traffic from the sidecar-local `localhost:15080` path to the standalone Koshi Service on port 8080 and ensured the identity header is sent on every request
+
+### Future direction
+
+Planned sidecar config delivery would remove the need for this standalone routing handoff by allowing policy to be delivered to the existing injected sidecar. That capability is not available in the current release.
 
 See the [enforcement mode config reference](#enforcement-mode) and the [pre-enforcement checklist](docs/kubernetes-observability.md#pre-enforcement-checklist) before switching.
 

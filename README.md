@@ -6,6 +6,28 @@ Koshi Runtime is a workload-scoped governance plane for AI systems. It deploys a
 
 **No repo clone required.** Install Koshi directly from the published OCI Helm chart and container image.
 
+## Documentation
+
+For setup, evaluation, contribution, and architectural context:
+
+**Start here**
+- [Koshi onboarding](docs/onboarding.md) — install, verify, collect signal, interpret shadow outcomes
+- [Local demo walkthrough](demo/local/README.md) — kind cluster setup, synthetic traffic, event and metric validation
+- [Kubernetes observability guide](docs/kubernetes-observability.md) — structured events, Prometheus queries, Grafana patterns
+
+**Project**
+- [Roadmap](ROADMAP.md) — public product direction for the open runtime
+- [Contributing](CONTRIBUTING.md) — contribution guide
+- [Security](SECURITY.md) — vulnerability reporting and disclosure policy
+- [License](LICENSE) — Apache 2.0
+
+**Design**
+- [Deterministic Accounting Invariants](docs/design/koshi-v1-deterministic-accounting-invariants.md)
+- [Enforcement Boundary](docs/design/koshi-v1-enforcement-boundary.md)
+- [Operator Trust Guarantees](docs/design/koshi-v1-operator-trust-guarantees.md)
+- [Why Koshi Exists](docs/design/koshi-v1-why-koshi-exists.md)
+- [Koshi and GenOps](docs/design/koshi-v1-genops-relationship.md)
+
 ## Quick Start: Kubernetes (Listener Mode)
 
 ```bash
@@ -562,28 +584,6 @@ kubectl rollout restart deployment -n my-namespace
 ```
 
 Existing pods with sidecars continue to function until restarted. Removing the namespace label only affects future pod creation.
-
-## Documentation
-
-For setup, evaluation, contribution, and architectural context:
-
-**Start here**
-- [Koshi onboarding](docs/onboarding.md) — install, verify, collect signal, interpret shadow outcomes
-- [Local demo walkthrough](demo/local/README.md) — kind cluster setup, synthetic traffic, event and metric validation
-- [Kubernetes observability guide](docs/kubernetes-observability.md) — structured events, Prometheus queries, Grafana patterns
-
-**Project**
-- [Roadmap](ROADMAP.md) — public product direction for the open runtime
-- [Contributing](CONTRIBUTING.md) — contribution guide
-- [Security](SECURITY.md) — vulnerability reporting and disclosure policy
-- [License](LICENSE) — Apache 2.0
-
-**Design**
-- [Deterministic Accounting Invariants](docs/design/koshi-v1-deterministic-accounting-invariants.md)
-- [Enforcement Boundary](docs/design/koshi-v1-enforcement-boundary.md)
-- [Operator Trust Guarantees](docs/design/koshi-v1-operator-trust-guarantees.md)
-- [Why Koshi Exists](docs/design/koshi-v1-why-koshi-exists.md)
-- [Koshi and GenOps](docs/design/koshi-v1-genops-relationship.md)
 
 ## GenOps Compatibility
 

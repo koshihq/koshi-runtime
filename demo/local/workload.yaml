@@ -18,7 +18,8 @@ spec:
     spec:
       containers:
         - name: app
-          image: curlimages/curl:latest
+          # Version-pinned (a tag, not an immutable digest) for reproducibility.
+          image: curlimages/curl:8.11.1
           command: ["sleep", "infinity"]
           # OPENAI_BASE_URL will be injected by the Koshi webhook
           # pointing at http://localhost:15080

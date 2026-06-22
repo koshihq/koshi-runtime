@@ -1,59 +1,232 @@
 # Koshi Onboarding
 
-This guide walks through installing Koshi in listener mode, verifying the sidecar is active, collecting governance signal, and interpreting shadow outcomes — all without blocking any traffic.
+This guide installs Koshi in listener mode, proves the sidecar works end-to-end against a throwaway **canary** namespace, and only then opts a real workload in. Listener mode collects shadow governance decisions on live traffic without blocking any requests.
 
-This flow uses published release artifacts. No local repo checkout is required.
+This flow uses published release artifacts. No local repo checkout is required. It is **canary-first**: install the chart → wait for the injector → validate against a canary → adopt your real workload.
+
+## Prerequisites
+
+- **Helm with OCI support** (Helm ≥ 3.8) — the chart is pulled from an `oci://` registry.
+- **Cluster-scoped install permissions** — the chart creates a `MutatingWebhookConfiguration` and cluster RBAC, so a namespace-only role is not sufficient.
+- **Image-registry access** — nodes must be able to pull from `ghcr.io/koshihq/...` (or the Docker Hub mirror, see below).
+- **Provider egress** (only for the optional real-upstream check) — nodes need outbound HTTPS to `api.openai.com`.
 
 ## Install
 
 ```bash
-# Install Koshi in listener mode (default)
+# Install Koshi in listener mode (default), waiting for resources to be ready.
 helm install koshi oci://ghcr.io/koshihq/charts/koshi \
   --version 0.2.12 \
-  --namespace koshi-system --create-namespace
-
-# Opt a namespace in for sidecar injection
-kubectl label namespace <namespace> runtime.getkoshi.ai/inject=true
-
-# Restart workloads to pick up the sidecar
-kubectl rollout restart deployment -n <namespace>
+  --namespace koshi-system --create-namespace \
+  --wait --timeout 120s
 ```
 
 > **Version pinning:** Always pin `--version` in production to avoid unexpected upgrades. The `appVersion` field in the chart metadata determines the default image tag when `image.tag` is unset.
 
 > The default image is `ghcr.io/koshihq/koshi-runtime`. To use the Docker Hub mirror, add `--set image.repository=docker.io/koshihq/koshi-runtime`.
 
-## Verify
-
-**Confirm the sidecar is injected:**
+**Wait for the injector before opting any workload in.** The webhook uses `failurePolicy: Ignore`, so a workload restarted before the injector is ready comes up *without* a sidecar:
 
 ```bash
-kubectl get pod -n <namespace> -l app=<your-app> \
+kubectl rollout status -n koshi-system deploy/koshi-koshi-injector --timeout=120s
+```
+
+> **Release name:** these commands assume the release is named `koshi`, so the injector Deployment is `koshi-koshi-injector`. Adjust the name if you used a different release name.
+
+## Canary verification
+
+Prove the full path — injection, base-URL rewrite, shadow events, and metrics — against a disposable namespace before touching any real workload.
+
+```bash
+CANARY_NS=koshi-eval
+CANARY_APP=koshi-canary
+```
+
+Create and opt in the canary namespace, then deploy a tiny canary workload:
+
+```bash
+kubectl create namespace "$CANARY_NS"
+kubectl label namespace "$CANARY_NS" runtime.getkoshi.ai/inject=true
+
+kubectl apply -n "$CANARY_NS" -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: $CANARY_APP
+  labels:
+    app: $CANARY_APP
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: $CANARY_APP
+  template:
+    metadata:
+      labels:
+        app: $CANARY_APP
+    spec:
+      containers:
+        - name: app
+          image: curlimages/curl:8.11.1
+          command: ["sleep", "infinity"]
+EOF
+
+kubectl rollout status deploy/"$CANARY_APP" -n "$CANARY_NS" --timeout=120s
+```
+
+Confirm the sidecar was injected:
+
+```bash
+kubectl get pod -n "$CANARY_NS" -l app="$CANARY_APP" \
   -o jsonpath='{.items[0].spec.containers[*].name}'
 # Should include "koshi-listener"
 ```
 
-**Confirm structured events are flowing:**
+> If you see only the `app` container, the injector webhook was not yet serving when the pod was admitted (`failurePolicy: Ignore` admits un-injected pods silently). Re-roll and re-check: `kubectl rollout restart deploy/"$CANARY_APP" -n "$CANARY_NS" && kubectl rollout status deploy/"$CANARY_APP" -n "$CANARY_NS"`.
+
+Send one request with a **distinctive `max_tokens`** and assert both the shadow event and a metric delta. Everything runs inside a subshell, so the port-forward cleanup trap is scoped to that subshell and never disturbs your own shell's traps:
 
 ```bash
-kubectl logs -n <namespace> deploy/<your-app> -c koshi-listener --tail=50 | \
-  jq 'select(.stream == "event")'
+(
+  set -e
+  kubectl port-forward -n "$CANARY_NS" deploy/"$CANARY_APP" 15080:15080 >/dev/null 2>&1 &
+  PF_PID=$!
+  trap 'kill "$PF_PID" 2>/dev/null; wait "$PF_PID" 2>/dev/null' EXIT
+
+  # Bounded wait for the port-forward, checking it stays alive.
+  for i in $(seq 1 30); do
+    kill -0 "$PF_PID" 2>/dev/null || { echo "port-forward died"; exit 1; }
+    curl -fsS http://127.0.0.1:15080/metrics >/dev/null 2>&1 && break
+    [ "$i" = 30 ] && { echo "FAIL: /metrics never became reachable"; exit 1; }
+    sleep 1
+  done
+
+  before=$(curl -fsS http://127.0.0.1:15080/metrics \
+    | awk '/^koshi_listener_decisions_total/ { s += $NF } END { printf "%d", s+0 }')
+
+  # 4242 is below the default guard (max_tokens_per_request: 32768), so the
+  # shadow decision is deterministically "allow".
+  kubectl exec -n "$CANARY_NS" deploy/"$CANARY_APP" -c app -- \
+    curl -s --connect-timeout 2 --max-time 5 \
+      -X POST http://localhost:15080/v1/chat/completions \
+      -H "Content-Type: application/json" -H "Host: api.openai.com" \
+      -d '{"model":"gpt-4","max_tokens":4242,"messages":[{"role":"user","content":"canary"}]}' \
+    >/dev/null 2>&1 || true
+
+  # Poll both signals on one bounded deadline (the emitter is async), with
+  # separate PASS/FAIL messages so it is clear which signal failed.
+  events_ok=false; metrics_ok=false
+  for i in $(seq 1 15); do
+    if [ "$events_ok" != true ]; then
+      kubectl logs -n "$CANARY_NS" deploy/"$CANARY_APP" -c koshi-listener --tail=50 2>/dev/null \
+        | jq -e --arg ns "$CANARY_NS" --arg app "$CANARY_APP" '
+            select(.stream=="event"
+                   and .event_type=="listener_shadow"
+                   and .namespace==$ns and .workload_name==$app
+                   and .provider=="openai"
+                   and .estimated_tokens==4242
+                   and .decision_shadow=="allow")' >/dev/null 2>&1 \
+        && events_ok=true
+    fi
+    if [ "$metrics_ok" != true ]; then
+      after=$(curl -fsS http://127.0.0.1:15080/metrics \
+        | awk '/^koshi_listener_decisions_total/ { s += $NF } END { printf "%d", s+0 }')
+      [ "$((after - before))" -ge 1 ] && metrics_ok=true
+    fi
+    [ "$events_ok" = true ] && [ "$metrics_ok" = true ] && break
+    sleep 1
+  done
+
+  [ "$events_ok" = true ]  && echo "PASS: listener_shadow allow event with expected identity + estimated_tokens=4242" \
+                           || { echo "FAIL: expected canary shadow event not found"; exit 1; }
+  [ "$metrics_ok" = true ] && echo "PASS: koshi_listener_decisions_total increased" \
+                           || { echo "FAIL: decisions counter did not increase"; exit 1; }
+)
 ```
 
-**Confirm the metrics endpoint is reachable:**
+The assertion checks **identity and types**, not "every field populated": on an `allow` decision `reason_code` is legitimately empty, `model` is currently emitted empty, and `actual_tokens` is `0`. In listener mode `estimated_tokens` echoes the request's `max_tokens`, so asserting `4242` gives a distinctive, unambiguous match.
+
+### Optional: prove a real upstream call (OpenAI)
+
+The check above proves Koshi emits governance signal — but because the listener emits *before* proxying, it would pass even if the upstream call failed. To prove a successful end-to-end round-trip, make one real OpenAI call.
 
 ```bash
-# Default sidecar port; adjust if you changed sidecar.port in your Helm values
-kubectl port-forward -n <namespace> deploy/<your-app> 15080:15080
+OPENAI_MODEL=gpt-4o-mini   # any model your key can call
+
+# Read the key without echoing it or leaving it in shell history.
+read -rs -p "OpenAI API key: " OPENAI_API_KEY; echo
+kubectl create secret generic koshi-canary-openai -n "$CANARY_NS" \
+  --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY"
+unset OPENAI_API_KEY
+
+# Inject the key (from the Secret) and the model. This triggers a new rollout,
+# so wait for it and run the call against the NEW pod.
+kubectl set env deploy/"$CANARY_APP" -n "$CANARY_NS" \
+  --from=secret/koshi-canary-openai OPENAI_MODEL="$OPENAI_MODEL"
+kubectl rollout status deploy/"$CANARY_APP" -n "$CANARY_NS" --timeout=120s
+```
+
+```bash
+kubectl exec -n "$CANARY_NS" deploy/"$CANARY_APP" -c app -- sh -c '
+  curl -sS -w "\nHTTP %{http_code}\n" \
+    -X POST http://localhost:15080/v1/chat/completions \
+    -H "Content-Type: application/json" -H "Host: api.openai.com" \
+    -H "Authorization: Bearer $OPENAI_API_KEY" \
+    -d "{\"model\":\"$OPENAI_MODEL\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"say hi\"}]}"'
+# Expect HTTP 2xx and a JSON body whose usage.total_tokens is > 0.
+```
+
+Do **not** treat a missing `budget_reconciled` event as a failure — it only fires when actual tokens differ from the reserved tokens, so it is conditional.
+
+### Clean up the canary
+
+```bash
+kubectl delete namespace "$CANARY_NS"
+# Removes the canary Deployment and the Secret together.
+```
+
+## Adopt for a real workload
+
+Once the canary passes, opt your real workload in. Fill in your own values (no angle brackets):
+
+```bash
+NS=your-namespace      # replace with your values
+APP=your-deployment    # replace with your values
+
+kubectl label namespace "$NS" runtime.getkoshi.ai/inject=true
+
+# Restart only the target Deployment (not every Deployment in the namespace).
+kubectl rollout restart deployment/"$APP" -n "$NS"
+kubectl rollout status deployment/"$APP" -n "$NS" --timeout=120s
+```
+
+Verify it the same way the canary did:
+
+```bash
+# Sidecar injected
+kubectl get pod -n "$NS" -l app="$APP" \
+  -o jsonpath='{.items[0].spec.containers[*].name}'
+# Should include "koshi-listener"
+
+# Structured events flowing
+kubectl logs -n "$NS" deploy/"$APP" -c koshi-listener --tail=50 | \
+  jq 'select(.stream == "event")'
+
+# Metrics endpoint reachable (default sidecar port; adjust if you changed sidecar.port)
+kubectl port-forward -n "$NS" deploy/"$APP" 15080:15080 &
 curl -s http://localhost:15080/metrics | grep koshi_listener
 ```
 
 ## Troubleshooting: No Events Appearing
 
-If the sidecar is injected but you see no governance events:
+If the sidecar is injected but you see no governance events, capture the pod name once and inspect it:
 
-1. Verify the sidecar container exists: `kubectl get pod <pod> -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`
-2. Verify the env vars were injected into the app container: `kubectl get pod <pod> -o jsonpath='{.spec.containers[0].env[*].name}'` — look for `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`
+```bash
+POD=$(kubectl get pod -n "$NS" -l app="$APP" -o jsonpath='{.items[0].metadata.name}')
+```
+
+1. Verify the sidecar container exists: `kubectl get pod -n "$NS" "$POD" -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`
+2. Verify the env vars were injected into the app container: `kubectl get pod -n "$NS" "$POD" -o jsonpath='{.spec.containers[0].env[*].name}'` — look for `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`
 3. If the env vars are missing, the workload's pod spec likely already defines them — the webhook will not overwrite existing values. Check the Deployment manifest.
 4. If the env vars are present but no events appear, the workload's SDK may not be honoring them — check whether the app uses a custom HTTP client or hardcoded base URL. The official OpenAI and Anthropic SDKs honor these env vars by default.
 
@@ -109,7 +282,7 @@ This release supports **posture discovery**, **built-in sidecar policy selection
 
 After installing Koshi, teams typically progress through these stages:
 
-1. **Listener audit** — install in listener mode, collect shadow decisions on live traffic. No blocking, no risk. Start here.
+1. **Listener audit** — install in listener mode, collect shadow decisions on live traffic. Listener mode does **not block by policy**, but it is not risk-free: it injects a sidecar container, rewrites `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`, places Koshi in the live provider request path, and requires restarting the target workload to take effect. It is lower risk than enforcement, not zero risk — validate against a canary namespace first (see [Canary verification](#canary-verification)). Start here.
 2. **Built-in enforcement** or **custom ConfigMap sidecar** — choose based on whether the built-in policy presets fit:
    - **Built-in enforcement** (Path A): add `runtime.getkoshi.ai/mode: "enforcement"` and optionally select a preset. Best when standard limits are sufficient.
    - **Custom ConfigMap sidecar** (Path C): deliver operator-authored budgets/guards via ConfigMap. Works in both listener and enforcement modes — shadow-test custom policy before activating blocking.

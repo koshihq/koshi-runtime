@@ -35,6 +35,11 @@ This demo creates a local kind cluster, installs Koshi in listener mode, injects
 
 ## Step-by-Step Walkthrough
 
+> **Context safety:** every `kubectl`/`helm` command below is pinned to the demo
+> cluster with `--context kind-koshi-demo` / `--kube-context kind-koshi-demo`, so the
+> manual path can never act on another cluster — even if your current context points
+> elsewhere. (`kind` commands target the cluster by `--name` and need no context flag.)
+
 ### 1. Create the cluster and build the image
 
 ```bash
@@ -47,6 +52,7 @@ kind load docker-image koshi:latest --name koshi-demo
 
 ```bash
 helm install koshi ../../deploy/helm/koshi/ \
+  --kube-context kind-koshi-demo \
   --namespace koshi-system --create-namespace \
   -f values.yaml
 ```
@@ -54,22 +60,22 @@ helm install koshi ../../deploy/helm/koshi/ \
 ### 3. Label the namespace and deploy a workload
 
 ```bash
-kubectl label namespace default runtime.getkoshi.ai/inject=true
-kubectl apply -f workload.yaml
-kubectl wait --for=condition=available deploy/demo-workload -n default --timeout=120s
+kubectl --context kind-koshi-demo label namespace default runtime.getkoshi.ai/inject=true
+kubectl --context kind-koshi-demo apply -f workload.yaml
+kubectl --context kind-koshi-demo wait --for=condition=available deploy/demo-workload -n default --timeout=120s
 ```
 
 ### 4. Verify sidecar injection
 
 ```bash
-kubectl get pod -l app=demo-workload -o jsonpath='{.items[0].spec.containers[*].name}'
+kubectl --context kind-koshi-demo get pod -l app=demo-workload -o jsonpath='{.items[0].spec.containers[*].name}'
 # Should include "koshi-listener"
 ```
 
 ### 5. Send synthetic traffic
 
 ```bash
-kubectl exec deploy/demo-workload -c app -- \
+kubectl --context kind-koshi-demo exec deploy/demo-workload -c app -- \
   curl -s -X POST http://localhost:15080/v1/chat/completions \
     -H "Content-Type: application/json" \
     -H "Host: api.openai.com" \
@@ -81,7 +87,7 @@ The sidecar routes to `api.openai.com` by default. Upstream responses may fail d
 ### 6. Validate structured events
 
 ```bash
-kubectl logs deploy/demo-workload -c koshi-listener --tail=50 | \
+kubectl --context kind-koshi-demo logs deploy/demo-workload -c koshi-listener --tail=50 | \
   jq 'select(.stream == "event")'
 ```
 
@@ -90,7 +96,7 @@ You should see events with `decision_shadow` and fields like `namespace`, `workl
 ### 7. Check metrics
 
 ```bash
-kubectl port-forward deploy/demo-workload 15080:15080 &
+kubectl --context kind-koshi-demo port-forward deploy/demo-workload 15080:15080 &
 curl -s http://localhost:15080/metrics | grep koshi_listener
 ```
 
@@ -118,9 +124,9 @@ This extension patches the demo workload in place. The key proof: the same over-
 First, apply the `sidecar-strict` policy while staying in listener mode. This lets you see shadow decisions against the strict guard (2048 max_tokens) before turning on enforcement:
 
 ```bash
-kubectl patch deploy demo-workload -n default -p \
+kubectl --context kind-koshi-demo patch deploy demo-workload -n default -p \
   '{"spec":{"template":{"metadata":{"annotations":{"runtime.getkoshi.ai/policy":"sidecar-strict"}}}}}'
-kubectl wait --for=condition=available deploy/demo-workload -n default --timeout=120s
+kubectl --context kind-koshi-demo wait --for=condition=available deploy/demo-workload -n default --timeout=120s
 ```
 
 ### 2. Establish the listener baseline — send an over-guard request
@@ -128,7 +134,7 @@ kubectl wait --for=condition=available deploy/demo-workload -n default --timeout
 The `sidecar-strict` policy has a 2048 max_tokens guard. Send a request that exceeds it:
 
 ```bash
-kubectl exec deploy/demo-workload -c app -- \
+kubectl --context kind-koshi-demo exec deploy/demo-workload -c app -- \
   curl -s --connect-timeout 2 --max-time 5 \
     -X POST http://localhost:15080/v1/chat/completions \
     -H "Content-Type: application/json" \
@@ -139,7 +145,7 @@ kubectl exec deploy/demo-workload -c app -- \
 The request proxies through (listener mode never blocks). Check the shadow event:
 
 ```bash
-kubectl logs deploy/demo-workload -c koshi-listener --tail=5 | \
+kubectl --context kind-koshi-demo logs deploy/demo-workload -c koshi-listener --tail=5 | \
   jq 'select(.stream == "event") | {decision_shadow, reason_code}'
 ```
 
@@ -150,15 +156,15 @@ You should see `decision_shadow: "would_throttle"` with `reason_code: "guard_max
 Add the enforcement annotation — same policy, now blocking:
 
 ```bash
-kubectl patch deploy demo-workload -n default -p \
+kubectl --context kind-koshi-demo patch deploy demo-workload -n default -p \
   '{"spec":{"template":{"metadata":{"annotations":{"runtime.getkoshi.ai/mode":"enforcement"}}}}}'
-kubectl wait --for=condition=available deploy/demo-workload -n default --timeout=120s
+kubectl --context kind-koshi-demo wait --for=condition=available deploy/demo-workload -n default --timeout=120s
 ```
 
 ### 4. Resend the same over-guard request
 
 ```bash
-kubectl exec deploy/demo-workload -c app -- \
+kubectl --context kind-koshi-demo exec deploy/demo-workload -c app -- \
   curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:15080/v1/chat/completions \
     -H "Content-Type: application/json" \
     -H "Host: api.openai.com" \
@@ -171,7 +177,7 @@ Same request, different mode, different outcome. The sidecar now blocks.
 ### 5. Confirm a within-limits request still passes
 
 ```bash
-kubectl exec deploy/demo-workload -c app -- \
+kubectl --context kind-koshi-demo exec deploy/demo-workload -c app -- \
   curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:15080/v1/chat/completions \
     -H "Content-Type: application/json" \
     -H "Host: api.openai.com" \
@@ -183,7 +189,7 @@ kubectl exec deploy/demo-workload -c app -- \
 ### 6. Check enforcement metrics
 
 ```bash
-kubectl port-forward deploy/demo-workload 15081:15080 &
+kubectl --context kind-koshi-demo port-forward deploy/demo-workload 15081:15080 &
 curl -s http://localhost:15081/metrics | grep koshi_enforcement
 ```
 
@@ -192,9 +198,9 @@ Expected metrics: `koshi_enforcement_decisions_total`, `koshi_tokens_used_total`
 ### 7. Reset to listener mode
 
 ```bash
-kubectl patch deploy demo-workload -n default --type=json -p \
+kubectl --context kind-koshi-demo patch deploy demo-workload -n default --type=json -p \
   '[{"op":"remove","path":"/spec/template/metadata/annotations/runtime.getkoshi.ai~1mode"},{"op":"remove","path":"/spec/template/metadata/annotations/runtime.getkoshi.ai~1policy"}]'
-kubectl wait --for=condition=available deploy/demo-workload -n default --timeout=120s
+kubectl --context kind-koshi-demo wait --for=condition=available deploy/demo-workload -n default --timeout=120s
 ```
 
 ## Optional Extension 2: Custom ConfigMap Sidecar Policy
@@ -208,8 +214,8 @@ This extension deploys a separate workload (`demo-custom-config`) with a custom 
 #### 1. Deploy the ConfigMap and workload
 
 ```bash
-kubectl apply -f custom-config-demo.yaml
-kubectl wait --for=condition=available deploy/demo-custom-config -n default --timeout=120s
+kubectl --context kind-koshi-demo apply -f custom-config-demo.yaml
+kubectl --context kind-koshi-demo wait --for=condition=available deploy/demo-custom-config -n default --timeout=120s
 ```
 
 The deployment has `configmap` + `policy` annotations but no `mode` annotation, so the sidecar runs in **listener mode** with the custom policy. Shadow decisions are computed against the custom guards and budgets, but no traffic is blocked.
@@ -217,7 +223,7 @@ The deployment has `configmap` + `policy` annotations but no `mode` annotation, 
 #### 2. Send a request that exceeds the custom guard (max_tokens > 128)
 
 ```bash
-kubectl exec deploy/demo-custom-config -c app -- \
+kubectl --context kind-koshi-demo exec deploy/demo-custom-config -c app -- \
   curl -s --connect-timeout 2 --max-time 5 \
     -X POST http://localhost:15080/v1/chat/completions \
     -H "Content-Type: application/json" \
@@ -228,7 +234,7 @@ kubectl exec deploy/demo-custom-config -c app -- \
 The request proxies through (listener mode). Check the shadow event:
 
 ```bash
-kubectl logs deploy/demo-custom-config -c koshi-listener --tail=5 | \
+kubectl --context kind-koshi-demo logs deploy/demo-custom-config -c koshi-listener --tail=5 | \
   jq 'select(.stream == "event") | {decision_shadow, reason_code}'
 ```
 
@@ -241,15 +247,15 @@ You should see `decision_shadow: "would_throttle"` with `reason_code: "guard_max
 Same ConfigMap, same policy — just add the mode annotation:
 
 ```bash
-kubectl patch deploy demo-custom-config -n default -p \
+kubectl --context kind-koshi-demo patch deploy demo-custom-config -n default -p \
   '{"spec":{"template":{"metadata":{"annotations":{"runtime.getkoshi.ai/mode":"enforcement"}}}}}'
-kubectl wait --for=condition=available deploy/demo-custom-config -n default --timeout=120s
+kubectl --context kind-koshi-demo wait --for=condition=available deploy/demo-custom-config -n default --timeout=120s
 ```
 
 #### 4. Resend the same over-guard request
 
 ```bash
-kubectl exec deploy/demo-custom-config -c app -- \
+kubectl --context kind-koshi-demo exec deploy/demo-custom-config -c app -- \
   curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:15080/v1/chat/completions \
     -H "Content-Type: application/json" \
     -H "Host: api.openai.com" \
@@ -262,7 +268,7 @@ Same request, same custom policy, different mode, different outcome.
 #### 5. Confirm a within-limits request still passes
 
 ```bash
-kubectl exec deploy/demo-custom-config -c app -- \
+kubectl --context kind-koshi-demo exec deploy/demo-custom-config -c app -- \
   curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:15080/v1/chat/completions \
     -H "Content-Type: application/json" \
     -H "Host: api.openai.com" \

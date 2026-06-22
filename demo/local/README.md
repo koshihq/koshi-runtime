@@ -4,6 +4,8 @@ This demo creates a local kind cluster, installs Koshi in listener mode, injects
 
 > **This demo is for local development and validation only.** It requires a repo checkout, a local Docker build, and a kind cluster. To install Koshi on a real cluster using published artifacts, see [Koshi Onboarding](../../docs/onboarding.md).
 
+> To drive this demo through a coding agent (Codex, Claude Code, Copilot CLI, Gemini CLI) under human approval, see the [agent-assisted evaluation guide](../../docs/agent-assisted-evaluation.md).
+
 ## What This Demo Validates
 
 - Sidecar injection via the mutating admission webhook

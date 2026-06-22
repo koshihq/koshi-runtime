@@ -476,3 +476,4 @@ See [`examples/sidecar-custom-deployment.yaml`](../examples/sidecar-custom-deplo
 
 - Review the [pre-enforcement checklist](kubernetes-observability.md#pre-enforcement-checklist) when you're ready to move from posture discovery to enforcement
 - See the [README](../README.md) for full configuration reference and architecture details
+- Use the [agent-assisted evaluation guide](agent-assisted-evaluation.md) to run this onboarding through a coding agent under explicit human approval

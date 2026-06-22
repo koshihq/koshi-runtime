@@ -14,6 +14,7 @@ For setup, evaluation, contribution, and architectural context:
 - [Koshi onboarding](docs/onboarding.md) — install, verify, collect signal, interpret shadow outcomes
 - [Local demo walkthrough](demo/local/README.md) — kind cluster setup, synthetic traffic, event and metric validation
 - [Kubernetes observability guide](docs/kubernetes-observability.md) — structured events, Prometheus queries, Grafana patterns
+- [Agent-assisted evaluation](docs/agent-assisted-evaluation.md) — drive the demo or onboarding through Codex, Claude Code, Copilot CLI, or Gemini CLI under human approval
 
 **Project**
 - [Roadmap](ROADMAP.md) — public product direction for the open runtime

@@ -66,8 +66,7 @@ PHASE 1 (planning posture — do not run any shell commands yet):
 
 PHASE 2 (manual-approval mode):
 - Run ONLY non-mutating checks and report results: `git status`; that docker/kind/helm/
-  kubectl/jq/curl are present; Docker daemon is running; TCP port 15080 on 127.0.0.1 is
-  free; and the current kube context.
+  kubectl/jq/curl are present; Docker daemon is running; and the current kube context.
 - Report any pre-existing working-tree changes before going further.
 - STOP and wait for my explicit approval before running ./demo/local/setup.sh.
 - After I approve, run ./demo/local/setup.sh (run it from the repo root, or cd demo/local

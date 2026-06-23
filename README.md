@@ -31,26 +31,30 @@ For setup, evaluation, contribution, and architectural context:
 
 ## Quick Start: Kubernetes (Listener Mode)
 
+Install the chart and wait for the injector to be ready — then validate against a
+disposable **canary** namespace before opting any real workload in. The full canary,
+verification, adoption, and rollback steps are in
+**[docs/onboarding.md](docs/onboarding.md)** (canonical); this is just the entry point.
+
 ```bash
-# 1. Install into koshi-system
-helm install koshi oci://ghcr.io/koshihq/charts/koshi \
+KUBE_CONTEXT=your-cluster-context   # kubectl config get-contexts
+
+# 1. Install into koshi-system, waiting for resources to be ready.
+helm --kube-context "$KUBE_CONTEXT" install koshi oci://ghcr.io/koshihq/charts/koshi \
   --version 0.2.12 \
-  --namespace koshi-system --create-namespace
+  --namespace koshi-system --create-namespace \
+  --wait --timeout 120s
 
-# 2. Opt namespaces in — only labeled namespaces get the sidecar
-kubectl label namespace my-namespace runtime.getkoshi.ai/inject=true
-
-# 3. Restart workloads to pick up the sidecar
-kubectl rollout restart deployment -n my-namespace
-
-# 4. Observe shadow events
-kubectl logs -n my-namespace deploy/my-app -c koshi-listener --tail=100 | \
-  jq 'select(.stream == "event")'
-
-# 5. Check metrics (default sidecar port; adjust if you changed sidecar.port)
-kubectl port-forward -n my-namespace deploy/my-app 15080:15080
-curl http://localhost:15080/metrics | grep koshi_listener
+# 2. Wait for the injector. failurePolicy: Ignore means a workload restarted before the
+#    injector is serving comes up WITHOUT a sidecar, so gate on this before opting in.
+kubectl --context "$KUBE_CONTEXT" rollout status -n koshi-system \
+  deploy/koshi-koshi-injector --timeout=120s
 ```
+
+Next, follow **[Canary verification](docs/onboarding.md#canary-verification)** in the
+onboarding guide before running any real-workload commands. See
+**[Tested compatibility](docs/onboarding.md#tested-compatibility)** for the environments
+this has actually been validated on.
 
 ### What You Can Do on Day One
 
@@ -58,7 +62,7 @@ curl http://localhost:15080/metrics | grep koshi_listener
 - Label any namespace and restart workloads to get sidecars injected
 - Collect structured JSON events from `koshi-listener` container logs
 - Scrape Prometheus metrics from `/metrics` on the sidecar port (default `15080`, configurable via `sidecar.port`)
-- Observe real shadow decisions (`allow`, `would_throttle`, `would_kill`, `would_reject`) on live traffic without blocking anything
+- Observe real shadow decisions (`allow`, `would_throttle`, `would_kill`, `would_reject`) on live traffic — listener mode does not block by policy, though the sidecar does sit in the request path (it rewrites the provider base URL and proxies)
 
 ### What Traffic Produces Signal
 
@@ -69,11 +73,19 @@ Workloads produce governance signal when they send OpenAI- or Anthropic-compatib
 - The workload must not already set these env vars in its pod spec — if present, the webhook will not overwrite them.
 - The workload must not hardcode provider URLs in application code or config files, bypassing the env vars entirely.
 
-**No signal? Check these first:**
-1. Verify the sidecar container exists: `kubectl get pod <pod> -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`
-2. Verify the env vars were injected: `kubectl get pod <pod> -o jsonpath='{.spec.containers[0].env[*].name}'` — look for `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`
+**No signal?** Capture the pod once, then inspect it:
+
+```bash
+POD=$(kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" -l "$POD_SELECTOR" \
+  --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')
+```
+
+1. Verify the sidecar container exists: `kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" "$POD" -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`
+2. Verify the env vars were injected: `kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" "$POD" -o jsonpath='{.spec.containers[0].env[*].name}'` — look for `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`
 3. If the env vars are missing, the workload's pod spec likely already defines them — check the Deployment manifest
 4. If the env vars are present but no events appear, the SDK may not be honoring them — check whether the app uses a custom HTTP client or hardcoded base URL
+
+See [onboarding Troubleshooting](docs/onboarding.md#troubleshooting-no-events-appearing) for the full version.
 
 ## What Gets Installed
 
@@ -101,7 +113,7 @@ Request → Identify workload (pod metadata) → Resolve policy → Extract max_
 
 ### Listener vs Enforcement Mode
 
-Both modes execute the same enforcement pipeline. Listener mode surfaces governance posture without affecting traffic; enforcement mode acts on it.
+Both modes execute the same enforcement pipeline. Listener mode surfaces governance posture without **blocking** traffic by policy — though the sidecar is in the request path (it rewrites the provider base URL and proxies), so it does change the request path; enforcement mode additionally acts on the decision.
 
 | Behavior | Listener | Enforcement |
 |----------|----------|-------------|
@@ -202,7 +214,8 @@ See [`examples/config.yaml`](examples/config.yaml) for a fully annotated referen
 Events are emitted as JSON to stdout with `"stream": "event"`. Filter with:
 
 ```bash
-kubectl logs -c koshi-listener | jq 'select(.stream == "event")'
+# $KUBE_CONTEXT / $NS / $POD as established in the onboarding flow (docs/onboarding.md).
+kubectl --context "$KUBE_CONTEXT" logs -n "$NS" "$POD" -c koshi-listener | jq 'select(.stream == "event")'
 ```
 
 ### Listener Metrics
@@ -255,10 +268,14 @@ make docker
 ### Kubernetes (Helm)
 
 ```bash
-helm install koshi oci://ghcr.io/koshihq/charts/koshi \
+KUBE_CONTEXT=your-cluster-context   # kubectl config get-contexts
+
+helm --kube-context "$KUBE_CONTEXT" install koshi oci://ghcr.io/koshihq/charts/koshi \
   --version 0.2.12 \
-  --namespace koshi-system --create-namespace
+  --namespace koshi-system --create-namespace --wait --timeout 120s
 ```
+
+> **Canonical flow:** this is a bare install reference. For the full context-pinned, canary-first install → verify → adopt → rollback flow, follow [docs/onboarding.md](docs/onboarding.md).
 
 > **Version pinning:** Always pin `--version` in production to avoid unexpected upgrades. The `appVersion` field in the chart metadata determines the default image tag when `image.tag` is unset.
 
@@ -563,7 +580,7 @@ Koshi Runtime implements the [GenOps Governance Specification](https://github.co
 
 - **One binary, two roles.** `KOSHI_ROLE=injector` starts the admission webhook server. Default starts the proxy.
 - **No Kubernetes API calls on the request path.** Pod identity is normalized at admission time by the webhook and read from env vars by the sidecar.
-- **Webhook `failurePolicy: Ignore`.** If the injector is down, pods still create — they just don't get the sidecar. Verify sidecar presence after deployment: `kubectl get pod <pod> -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`.
+- **Webhook `failurePolicy: Ignore`.** If the injector is down, pods still create — they just don't get the sidecar. Verify sidecar presence after deployment by capturing a pod (`POD=$(kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" -l "$POD_SELECTOR" --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')`) and checking `kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" "$POD" -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`.
 - **Base-URL injection is safe.** `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` are only set on app containers if not already present. See [What Traffic Produces Signal](#what-traffic-produces-signal) for implications when these vars are already defined.
 - **Reservation-first accounting.** Tokens are reserved before the request and reconciled with actual usage after the response.
 - **Fail open on infrastructure, fail closed on policy.** A panic triggers degraded pass-through mode. In enforcement mode, an unknown workload gets 403. In listener mode, unknown workloads emit `would_reject` and traffic proxies through.
@@ -571,20 +588,27 @@ Koshi Runtime implements the [GenOps Governance Specification](https://github.co
 ## Uninstall / Rollback
 
 ```bash
-# Remove Koshi entirely
-helm uninstall koshi -n koshi-system
+KUBE_CONTEXT=your-cluster-context
 
-# Remove the auto-generated TLS secret (created by cert-gen hook, not managed by Helm release)
-kubectl delete secret koshi-koshi-webhook-tls -n koshi-system 2>/dev/null || true
+# 1. Stop future injection in the namespace you opted in.
+kubectl --context "$KUBE_CONTEXT" label namespace "$NS" runtime.getkoshi.ai/inject-
 
-# Remove namespace label (stops new pods from getting sidecars)
-kubectl label namespace my-namespace runtime.getkoshi.ai/inject-
+# 2. Restart ONLY the named workloads you adopted (never a namespace-wide restart) to
+#    drop their sidecars. Existing pods keep their sidecar until restarted.
+kubectl --context "$KUBE_CONTEXT" rollout restart deployment/"$APP" -n "$NS"
 
-# Restart workloads to remove existing sidecars
-kubectl rollout restart deployment -n my-namespace
+# 3. Uninstall the release.
+helm --kube-context "$KUBE_CONTEXT" uninstall koshi -n koshi-system
+
+# 4. Delete the cert-gen hook TLS secret (hook-created cleanup state, not removed by uninstall).
+kubectl --context "$KUBE_CONTEXT" delete secret koshi-koshi-webhook-tls -n koshi-system --ignore-not-found
 ```
 
-Existing pods with sidecars continue to function until restarted. Removing the namespace label only affects future pod creation.
+`helm uninstall` does **not** remove the cert-gen hook RBAC (`koshi-koshi-cert-gen`
+ServiceAccount/ClusterRole/ClusterRoleBinding) or the hook-created TLS secret. For the
+complete, verified rollback — including residual-sidecar handling across all workloads in a
+labeled namespace, cert-gen RBAC cleanup, and exact verification — follow
+[**Stop evaluating Koshi**](docs/onboarding.md#stop-evaluating-koshi) in the onboarding guide.
 
 ## GenOps Compatibility
 

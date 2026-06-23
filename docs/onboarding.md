@@ -1,8 +1,22 @@
 # Koshi Onboarding
 
-This guide installs Koshi in listener mode, proves the sidecar works end-to-end against a throwaway **canary** namespace, and only then opts a real workload in. Listener mode collects shadow governance decisions on live traffic without blocking any requests.
+This guide installs Koshi in listener mode, validates the sidecar against a throwaway **canary** namespace, and only then opts a real workload in. Listener mode **does not block requests by policy**, but it does place the sidecar in the request path (it rewrites the provider base URL and proxies traffic) — it changes the request path, it does not leave traffic untouched.
 
 This flow uses published release artifacts. No local repo checkout is required. It is **canary-first**: install the chart → wait for the injector → validate against a canary → adopt your real workload.
+
+## Scope variables
+
+Every command in this guide is explicitly scoped — set these once and reuse them so nothing relies on the ambient kube context:
+
+```bash
+KUBE_CONTEXT=your-cluster-context   # kubectl config get-contexts
+RELEASE=koshi                       # Helm release name (resource names derive from it)
+KOSHI_NS=koshi-system               # namespace Koshi installs into
+
+# Confirm you are targeting the intended cluster before mutating anything.
+kubectl config get-contexts "$KUBE_CONTEXT"
+kubectl --context "$KUBE_CONTEXT" cluster-info | head -1
+```
 
 ## Prerequisites
 
@@ -14,10 +28,14 @@ This flow uses published release artifacts. No local repo checkout is required. 
 ## Install
 
 ```bash
+# Record whether the namespace already existed (rollback only deletes it if WE created it).
+kubectl --context "$KUBE_CONTEXT" get ns "$KOSHI_NS" >/dev/null 2>&1 \
+  && KOSHI_NS_PREEXISTING=true || KOSHI_NS_PREEXISTING=false
+
 # Install Koshi in listener mode (default), waiting for resources to be ready.
-helm install koshi oci://ghcr.io/koshihq/charts/koshi \
+helm --kube-context "$KUBE_CONTEXT" install "$RELEASE" oci://ghcr.io/koshihq/charts/koshi \
   --version 0.2.12 \
-  --namespace koshi-system --create-namespace \
+  --namespace "$KOSHI_NS" --create-namespace \
   --wait --timeout 120s
 ```
 
@@ -25,17 +43,20 @@ helm install koshi oci://ghcr.io/koshihq/charts/koshi \
 
 > The default image is `ghcr.io/koshihq/koshi-runtime`. To use the Docker Hub mirror, add `--set image.repository=docker.io/koshihq/koshi-runtime`.
 
+> **`KOSHI_NS_PREEXISTING` is set in this shell.** If you run rollback from a different terminal session, re-record it (or leave it unset — rollback preserves the namespace when it is unknown). See [Stop evaluating Koshi](#stop-evaluating-koshi).
+
 **Wait for the injector before opting any workload in.** The webhook uses `failurePolicy: Ignore`, so a workload restarted before the injector is ready comes up *without* a sidecar:
 
 ```bash
-kubectl rollout status -n koshi-system deploy/koshi-koshi-injector --timeout=120s
+kubectl --context "$KUBE_CONTEXT" rollout status -n "$KOSHI_NS" \
+  deploy/"${RELEASE}-koshi-injector" --timeout=120s
 ```
 
-> **Release name:** these commands assume the release is named `koshi`, so the injector Deployment is `koshi-koshi-injector`. Adjust the name if you used a different release name.
+> **Release name:** resource names derive from `$RELEASE` (e.g. the injector Deployment is `${RELEASE}-koshi-injector`). With the default `RELEASE=koshi` that is `koshi-koshi-injector`.
 
 ## Canary verification
 
-Prove the full path — injection, base-URL rewrite, shadow events, and metrics — against a disposable namespace before touching any real workload.
+Validate the **listener path** against a disposable namespace before touching any real workload: sidecar **injection**, **base-URL rewrite**, **listener evaluation**, **shadow events**, and **metrics**. This is **not** an end-to-end upstream test — the listener emits *before* proxying, so it would pass even if the upstream call failed. For a real round-trip, see the [optional OpenAI step](#optional-prove-a-real-upstream-call-openai).
 
 ```bash
 CANARY_NS=koshi-eval
@@ -45,10 +66,10 @@ CANARY_APP=koshi-canary
 Create and opt in the canary namespace, then deploy a tiny canary workload:
 
 ```bash
-kubectl create namespace "$CANARY_NS"
-kubectl label namespace "$CANARY_NS" runtime.getkoshi.ai/inject=true
+kubectl --context "$KUBE_CONTEXT" create namespace "$CANARY_NS"
+kubectl --context "$KUBE_CONTEXT" label namespace "$CANARY_NS" runtime.getkoshi.ai/inject=true
 
-kubectl apply -n "$CANARY_NS" -f - <<EOF
+kubectl --context "$KUBE_CONTEXT" apply -n "$CANARY_NS" -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -71,77 +92,79 @@ spec:
           command: ["sleep", "infinity"]
 EOF
 
-kubectl rollout status deploy/"$CANARY_APP" -n "$CANARY_NS" --timeout=120s
+kubectl --context "$KUBE_CONTEXT" rollout status deploy/"$CANARY_APP" -n "$CANARY_NS" --timeout=120s
 ```
 
-Confirm the sidecar was injected:
+**Pin one concrete pod** and run every check against it (a re-roll/rollout replaces the pod, so re-pin after each):
 
 ```bash
-kubectl get pod -n "$CANARY_NS" -l app="$CANARY_APP" \
-  -o jsonpath='{.items[0].spec.containers[*].name}'
-# Should include "koshi-listener"
+POD=$(kubectl --context "$KUBE_CONTEXT" get pod -n "$CANARY_NS" -l app="$CANARY_APP" \
+  --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')
+echo "Pinned pod: $POD"
+
+# 1. Sidecar injected?
+kubectl --context "$KUBE_CONTEXT" get pod -n "$CANARY_NS" "$POD" \
+  -o jsonpath='{.spec.containers[*].name}'; echo   # expect to include "koshi-listener"
+
+# 2. Base URL rewritten to point at the sidecar?
+kubectl --context "$KUBE_CONTEXT" get pod -n "$CANARY_NS" "$POD" \
+  -o jsonpath='{.spec.containers[?(@.name=="app")].env[?(@.name=="OPENAI_BASE_URL")].value}'; echo
+# expect: http://localhost:15080
 ```
 
-> If you see only the `app` container, the injector webhook was not yet serving when the pod was admitted (`failurePolicy: Ignore` admits un-injected pods silently). Re-roll and re-check: `kubectl rollout restart deploy/"$CANARY_APP" -n "$CANARY_NS" && kubectl rollout status deploy/"$CANARY_APP" -n "$CANARY_NS"`.
+> If you see only the `app` container, the injector webhook was not yet serving when the pod was admitted (`failurePolicy: Ignore` admits un-injected pods silently). Re-roll, then **re-pin `$POD`**:
+> `kubectl --context "$KUBE_CONTEXT" rollout restart deploy/"$CANARY_APP" -n "$CANARY_NS" && kubectl --context "$KUBE_CONTEXT" rollout status deploy/"$CANARY_APP" -n "$CANARY_NS"`, then re-run the `POD=$(...)` capture above.
 
-Send one request with a **distinctive `max_tokens`** and assert both the shadow event and a metric delta. Everything runs inside a subshell, so the port-forward cleanup trap is scoped to that subshell and never disturbs your own shell's traps:
+Send one request with a **distinctive `max_tokens`** through the **injected** `$OPENAI_BASE_URL` (read inside the pod, so the test exercises the rewrite), then assert the shadow event and a metric delta. All reads are in-pod (no host port-forward), pinned to `$POD`:
 
 ```bash
-(
-  set -e
-  kubectl port-forward -n "$CANARY_NS" deploy/"$CANARY_APP" 15080:15080 >/dev/null 2>&1 &
-  PF_PID=$!
-  trap 'kill "$PF_PID" 2>/dev/null; wait "$PF_PID" 2>/dev/null' EXIT
+metrics() {
+  kubectl --context "$KUBE_CONTEXT" exec -n "$CANARY_NS" "$POD" -c app -- \
+    curl -fsS --max-time 5 http://localhost:15080/metrics 2>/dev/null \
+    | awk '/^koshi_listener_decisions_total/ { s += $NF } END { printf "%d", s+0 }'
+}
 
-  # Bounded wait for the port-forward, checking it stays alive.
-  for i in $(seq 1 30); do
-    kill -0 "$PF_PID" 2>/dev/null || { echo "port-forward died"; exit 1; }
-    curl -fsS http://127.0.0.1:15080/metrics >/dev/null 2>&1 && break
-    [ "$i" = 30 ] && { echo "FAIL: /metrics never became reachable"; exit 1; }
-    sleep 1
-  done
+before=$(metrics)
 
-  before=$(curl -fsS http://127.0.0.1:15080/metrics \
-    | awk '/^koshi_listener_decisions_total/ { s += $NF } END { printf "%d", s+0 }')
+# 4242 is below the default guard (max_tokens_per_request: 32768), so the shadow
+# decision is deterministically "allow". Send through the injected base URL.
+kubectl --context "$KUBE_CONTEXT" exec -n "$CANARY_NS" "$POD" -c app -- sh -c '
+  curl -s --connect-timeout 2 --max-time 5 \
+    -X POST "$OPENAI_BASE_URL/v1/chat/completions" \
+    -H "Content-Type: application/json" -H "Host: api.openai.com" \
+    -d "{\"model\":\"gpt-4\",\"max_tokens\":4242,\"messages\":[{\"role\":\"user\",\"content\":\"canary\"}]}"' \
+  >/dev/null 2>&1 || true
 
-  # 4242 is below the default guard (max_tokens_per_request: 32768), so the
-  # shadow decision is deterministically "allow".
-  kubectl exec -n "$CANARY_NS" deploy/"$CANARY_APP" -c app -- \
-    curl -s --connect-timeout 2 --max-time 5 \
-      -X POST http://localhost:15080/v1/chat/completions \
-      -H "Content-Type: application/json" -H "Host: api.openai.com" \
-      -d '{"model":"gpt-4","max_tokens":4242,"messages":[{"role":"user","content":"canary"}]}' \
-    >/dev/null 2>&1 || true
+# Poll both signals on one bounded deadline (the emitter is async), with separate
+# PASS/FAIL messages so it is clear which signal failed.
+events_ok=false; metrics_ok=false
+for i in $(seq 1 15); do
+  if [ "$events_ok" != true ]; then
+    kubectl --context "$KUBE_CONTEXT" logs -n "$CANARY_NS" "$POD" -c koshi-listener --tail=50 2>/dev/null \
+      | jq -e --arg ns "$CANARY_NS" --arg app "$CANARY_APP" '
+          select(.stream=="event"
+                 and .event_type=="listener_shadow"
+                 and .namespace==$ns and .workload_name==$app
+                 and .provider=="openai"
+                 and .estimated_tokens==4242
+                 and .decision_shadow=="allow")' >/dev/null 2>&1 \
+      && events_ok=true
+  fi
+  if [ "$metrics_ok" != true ]; then
+    [ "$(( $(metrics) - before ))" -ge 1 ] && metrics_ok=true
+  fi
+  [ "$events_ok" = true ] && [ "$metrics_ok" = true ] && break
+  sleep 1
+done
 
-  # Poll both signals on one bounded deadline (the emitter is async), with
-  # separate PASS/FAIL messages so it is clear which signal failed.
-  events_ok=false; metrics_ok=false
-  for i in $(seq 1 15); do
-    if [ "$events_ok" != true ]; then
-      kubectl logs -n "$CANARY_NS" deploy/"$CANARY_APP" -c koshi-listener --tail=50 2>/dev/null \
-        | jq -e --arg ns "$CANARY_NS" --arg app "$CANARY_APP" '
-            select(.stream=="event"
-                   and .event_type=="listener_shadow"
-                   and .namespace==$ns and .workload_name==$app
-                   and .provider=="openai"
-                   and .estimated_tokens==4242
-                   and .decision_shadow=="allow")' >/dev/null 2>&1 \
-        && events_ok=true
-    fi
-    if [ "$metrics_ok" != true ]; then
-      after=$(curl -fsS http://127.0.0.1:15080/metrics \
-        | awk '/^koshi_listener_decisions_total/ { s += $NF } END { printf "%d", s+0 }')
-      [ "$((after - before))" -ge 1 ] && metrics_ok=true
-    fi
-    [ "$events_ok" = true ] && [ "$metrics_ok" = true ] && break
-    sleep 1
-  done
-
-  [ "$events_ok" = true ]  && echo "PASS: listener_shadow allow event with expected identity + estimated_tokens=4242" \
-                           || { echo "FAIL: expected canary shadow event not found"; exit 1; }
-  [ "$metrics_ok" = true ] && echo "PASS: koshi_listener_decisions_total increased" \
-                           || { echo "FAIL: decisions counter did not increase"; exit 1; }
-)
+failed=false
+[ "$events_ok" = true ]  && echo "PASS: listener_shadow allow event with expected identity + estimated_tokens=4242" \
+                         || { echo "FAIL: expected canary shadow event not found"; failed=true; }
+[ "$metrics_ok" = true ] && echo "PASS: koshi_listener_decisions_total increased" \
+                         || { echo "FAIL: decisions counter did not increase"; failed=true; }
+# Sets a non-zero exit status on failure without exiting your shell (safe to paste).
+[ "$failed" = false ] && echo "Canary verification PASSED" || echo "Canary verification FAILED (\$? is non-zero)"
+[ "$failed" = false ]
 ```
 
 The assertion checks **identity and types**, not "every field populated": on an `allow` decision `reason_code` is legitimately empty, `model` is currently emitted empty, and `actual_tokens` is `0`. In listener mode `estimated_tokens` echoes the request's `max_tokens`, so asserting `4242` gives a distinctive, unambiguous match.
@@ -153,23 +176,28 @@ The check above proves Koshi emits governance signal — but because the listene
 ```bash
 OPENAI_MODEL=gpt-4o-mini   # any model your key can call
 
-# Read the key without echoing it or leaving it in shell history.
+# Enter the key with no echo, and create the Secret WITHOUT putting the key in
+# process arguments (visible via `ps`). `printf` is a shell builtin, so the value
+# never appears in argv; kubectl only sees /dev/stdin. The human runs this block.
 read -rs -p "OpenAI API key: " OPENAI_API_KEY; echo
-kubectl create secret generic koshi-canary-openai -n "$CANARY_NS" \
-  --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY"
+printf '%s' "$OPENAI_API_KEY" | kubectl --context "$KUBE_CONTEXT" create secret generic \
+  koshi-canary-openai -n "$CANARY_NS" --from-file=OPENAI_API_KEY=/dev/stdin
 unset OPENAI_API_KEY
 
-# Inject the key (from the Secret) and the model. This triggers a new rollout,
-# so wait for it and run the call against the NEW pod.
-kubectl set env deploy/"$CANARY_APP" -n "$CANARY_NS" \
+# Inject the key (from the Secret) and the model. This triggers a new rollout, so
+# wait for it and RE-PIN the pod — the old $POD is replaced.
+kubectl --context "$KUBE_CONTEXT" set env deploy/"$CANARY_APP" -n "$CANARY_NS" \
   --from=secret/koshi-canary-openai OPENAI_MODEL="$OPENAI_MODEL"
-kubectl rollout status deploy/"$CANARY_APP" -n "$CANARY_NS" --timeout=120s
+kubectl --context "$KUBE_CONTEXT" rollout status deploy/"$CANARY_APP" -n "$CANARY_NS" --timeout=120s
+POD=$(kubectl --context "$KUBE_CONTEXT" get pod -n "$CANARY_NS" -l app="$CANARY_APP" \
+  --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')
 ```
 
 ```bash
-kubectl exec -n "$CANARY_NS" deploy/"$CANARY_APP" -c app -- sh -c '
+# Run against the re-pinned pod, through the injected base URL.
+kubectl --context "$KUBE_CONTEXT" exec -n "$CANARY_NS" "$POD" -c app -- sh -c '
   curl -sS -w "\nHTTP %{http_code}\n" \
-    -X POST http://localhost:15080/v1/chat/completions \
+    -X POST "$OPENAI_BASE_URL/v1/chat/completions" \
     -H "Content-Type: application/json" -H "Host: api.openai.com" \
     -H "Authorization: Bearer $OPENAI_API_KEY" \
     -d "{\"model\":\"$OPENAI_MODEL\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"say hi\"}]}"'
@@ -181,7 +209,7 @@ Do **not** treat a missing `budget_reconciled` event as a failure — it only fi
 ### Clean up the canary
 
 ```bash
-kubectl delete namespace "$CANARY_NS"
+kubectl --context "$KUBE_CONTEXT" delete namespace "$CANARY_NS"
 # Removes the canary Deployment and the Secret together.
 ```
 
@@ -192,41 +220,72 @@ Once the canary passes, opt your real workload in. Fill in your own values (no a
 ```bash
 NS=your-namespace      # replace with your values
 APP=your-deployment    # replace with your values
-
-kubectl label namespace "$NS" runtime.getkoshi.ai/inject=true
-
-# Restart only the target Deployment (not every Deployment in the namespace).
-kubectl rollout restart deployment/"$APP" -n "$NS"
-kubectl rollout status deployment/"$APP" -n "$NS" --timeout=120s
 ```
 
-Verify it the same way the canary did:
+> **Namespace-label blast radius.** Labeling a namespace
+> `runtime.getkoshi.ai/inject=true` injects the sidecar into **every pod created or
+> scaled afterward** in that namespace — not only `$APP`. Prefer a namespace that holds
+> just the workloads you intend to evaluate, and account for the others at rollback time.
 
 ```bash
-# Sidecar injected
-kubectl get pod -n "$NS" -l app="$APP" \
-  -o jsonpath='{.items[0].spec.containers[*].name}'
-# Should include "koshi-listener"
+kubectl --context "$KUBE_CONTEXT" label namespace "$NS" runtime.getkoshi.ai/inject=true
 
-# Structured events flowing
-kubectl logs -n "$NS" deploy/"$APP" -c koshi-listener --tail=50 | \
+# Restart only the named target Deployment (never a namespace-wide restart).
+kubectl --context "$KUBE_CONTEXT" rollout restart deployment/"$APP" -n "$NS"
+kubectl --context "$KUBE_CONTEXT" rollout status deployment/"$APP" -n "$NS" --timeout=120s
+```
+
+**Pin one pod for verification.** Real Deployments do not always use `app=<name>` as
+their pod selector, so supply an explicit `POD_SELECTOR` rather than assuming it:
+
+```bash
+# Show the Deployment's pod selector to help you write POD_SELECTOR. kubectl -l supports
+# set-based expressions, so matchExpressions selectors are fine here.
+kubectl --context "$KUBE_CONTEXT" get deploy "$APP" -n "$NS" -o jsonpath='{.spec.selector}'; echo
+
+POD_SELECTOR='app.kubernetes.io/name=your-app'   # set to YOUR Deployment's pod labels
+
+# Newest Ready pod matching the selector.
+POD=$(kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" -l "$POD_SELECTOR" \
+  --field-selector=status.phase=Running --sort-by=.metadata.creationTimestamp \
+  -o jsonpath='{.items[-1:].metadata.name}')
+
+# Validate the pinned pod actually belongs to $APP (pod -> ReplicaSet -> Deployment).
+# Use the CONTROLLER owner reference — ownerReferences ordering is not guaranteed.
+RS=$(kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" "$POD" -o jsonpath='{.metadata.ownerReferences[?(@.controller==true)].name}')
+OWNER=$(kubectl --context "$KUBE_CONTEXT" get rs -n "$NS" "$RS" -o jsonpath='{.metadata.ownerReferences[?(@.controller==true)].name}' 2>/dev/null)
+[ "$OWNER" = "$APP" ] || { echo "STOP: $POD is not owned by Deployment $APP (got '$OWNER') — fix POD_SELECTOR"; }
+```
+
+Verify against that one pinned pod (same checks the canary ran, in-pod — no port-forward):
+
+```bash
+# Sidecar injected + base URL rewritten (read OPENAI_BASE_URL from whichever
+# container has it — the app container name is not necessarily "$APP")
+kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" "$POD" -o jsonpath='{.spec.containers[*].name}'; echo
+kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" "$POD" \
+  -o jsonpath='{.spec.containers[*].env[?(@.name=="OPENAI_BASE_URL")].value}'; echo
+
+# Structured events flowing (from the pinned pod's sidecar)
+kubectl --context "$KUBE_CONTEXT" logs -n "$NS" "$POD" -c koshi-listener --tail=50 | \
   jq 'select(.stream == "event")'
 
-# Metrics endpoint reachable (default sidecar port; adjust if you changed sidecar.port)
-kubectl port-forward -n "$NS" deploy/"$APP" 15080:15080 &
-curl -s http://localhost:15080/metrics | grep koshi_listener
+# Metrics via in-pod curl (use your app container's name if it is not the first container)
+kubectl --context "$KUBE_CONTEXT" exec -n "$NS" "$POD" -- \
+  curl -fsS --max-time 5 http://localhost:15080/metrics | grep koshi_listener
 ```
 
 ## Troubleshooting: No Events Appearing
 
-If the sidecar is injected but you see no governance events, capture the pod name once and inspect it:
+If the sidecar is injected but you see no governance events, pin the pod once and inspect it:
 
 ```bash
-POD=$(kubectl get pod -n "$NS" -l app="$APP" -o jsonpath='{.items[0].metadata.name}')
+POD=$(kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" -l "$POD_SELECTOR" \
+  --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')
 ```
 
-1. Verify the sidecar container exists: `kubectl get pod -n "$NS" "$POD" -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`
-2. Verify the env vars were injected into the app container: `kubectl get pod -n "$NS" "$POD" -o jsonpath='{.spec.containers[0].env[*].name}'` — look for `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`
+1. Verify the sidecar container exists: `kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" "$POD" -o jsonpath='{.spec.containers[*].name}'` — look for `koshi-listener`
+2. Verify the env vars were injected into the app container: `kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" "$POD" -o jsonpath='{.spec.containers[0].env[*].name}'` — look for `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`
 3. If the env vars are missing, the workload's pod spec likely already defines them — the webhook will not overwrite existing values. Check the Deployment manifest.
 4. If the env vars are present but no events appear, the workload's SDK may not be honoring them — check whether the app uses a custom HTTP client or hardcoded base URL. The official OpenAI and Anthropic SDKs honor these env vars by default.
 
@@ -471,6 +530,108 @@ Custom config works in both listener and enforcement modes. A sidecar with `conf
 **Rollback:** remove the configmap and policy annotations and restart the workload — it returns to built-in policy behavior.
 
 See [`examples/sidecar-custom-deployment.yaml`](../examples/sidecar-custom-deployment.yaml) for a complete example.
+
+## Stop evaluating Koshi
+
+A full rollback. Which path applies depends on whether you only ran the canary or also adopted a real workload. All commands are context-pinned and use the `$RELEASE`/`$KOSHI_NS` variables from [Scope variables](#scope-variables).
+
+### Before real-workload adoption (only the canary was touched)
+
+```bash
+kubectl --context "$KUBE_CONTEXT" delete namespace "$CANARY_NS" --ignore-not-found
+```
+
+Then run **Uninstall + leftover cleanup** below.
+
+### After adoption — restart injected workloads first (rollback invariant)
+
+Removing the namespace label stops *future* injection but does not remove sidecars from running pods. Because the label injected the sidecar into **every** pod created or scaled during the evaluation, restarting only `$APP` may leave sidecars in other workloads.
+
+```bash
+# Stop future injection.
+kubectl --context "$KUBE_CONTEXT" label namespace "$NS" runtime.getkoshi.ai/inject-
+
+# Inventory ALL sidecar-bearing pods and their controllers (any kind, not just Deployments).
+# Resolve the CONTROLLER owner reference (ordering is not guaranteed); pods with no
+# controller resolve as Pod/<name>.
+kubectl --context "$KUBE_CONTEXT" get pods -n "$NS" -o json \
+  | jq -r '.items[]
+           | select(any(.spec.containers[]; .name=="koshi-listener"))
+           | (.metadata.ownerReferences // [] | map(select(.controller==true)) | .[0]) as $o
+           | if $o == null then "Pod/\(.metadata.name)" else "\($o.kind)/\($o.name)" end' \
+  | sort -u
+```
+
+Resolve each owner (a `ReplicaSet/<rs>` belongs to a Deployment — look up its owner) and **report** the list. **Do not restart automatically.** For each workload the operator approves, restart it with the controller-appropriate action:
+
+- **Deployment / StatefulSet / DaemonSet:** `kubectl --context "$KUBE_CONTEXT" rollout restart <kind>/<name> -n "$NS"` then `rollout status`.
+- **Job / standalone Pod:** delete and recreate from its source manifest (no `rollout restart`).
+- **Unknown or ambiguous ownership:** stop and resolve manually before continuing.
+
+> **Rollback is incomplete** until every injected workload has been restarted **or** you explicitly accept leaving residual Koshi sidecars running. Do not proceed to uninstall otherwise.
+
+### Uninstall + leftover cleanup
+
+```bash
+helm --kube-context "$KUBE_CONTEXT" uninstall "$RELEASE" -n "$KOSHI_NS"
+```
+
+`helm uninstall` removes the Helm-release-managed resources (the injector Deployment/Service, the `${RELEASE}-koshi-injector` ServiceAccount/ClusterRole/ClusterRoleBinding, and the `${RELEASE}-koshi-injector` MutatingWebhookConfiguration). Two classes are **not** removed and must be deleted explicitly:
+
+- **Cert-gen hook RBAC** `${RELEASE}-koshi-cert-gen` (ServiceAccount/ClusterRole/ClusterRoleBinding) — these are Helm hook resources annotated `hook-delete-policy: before-hook-creation` only (no `hook-succeeded`), so `helm uninstall` leaves them behind.
+- **Webhook TLS Secret** `${RELEASE}-koshi-webhook-tls` — in the default flow this is **created at runtime by the cert-gen hook Job** (the chart's `secret.yaml` template renders only when you supply `webhook.certPEM`/`webhook.keyPEM`), so it is hook-created cleanup state, not Helm-release-managed.
+
+Delete them with a separate command per resource type (`kubectl delete` does not switch resource type mid-list):
+
+```bash
+kubectl --context "$KUBE_CONTEXT" delete clusterrole \
+  "${RELEASE}-koshi-cert-gen" "${RELEASE}-koshi-injector" --ignore-not-found
+kubectl --context "$KUBE_CONTEXT" delete clusterrolebinding \
+  "${RELEASE}-koshi-cert-gen" "${RELEASE}-koshi-injector" --ignore-not-found
+kubectl --context "$KUBE_CONTEXT" delete serviceaccount \
+  "${RELEASE}-koshi-cert-gen" -n "$KOSHI_NS" --ignore-not-found
+kubectl --context "$KUBE_CONTEXT" delete secret \
+  "${RELEASE}-koshi-webhook-tls" -n "$KOSHI_NS" --ignore-not-found
+```
+
+> **Known issue (chart `0.2.12`):** the cert-gen hook RBAC and TLS Secret are not cleaned up by `helm uninstall` because the hook resources lack a `hook-succeeded` delete policy. The explicit deletes above are the supported workaround for this release; the chart hook lifecycle is slated to be fixed and tested across install/upgrade/uninstall in a future chart release.
+
+### Delete the namespace (only if the evaluation created it)
+
+```bash
+# Fail-safe: only delete $KOSHI_NS if WE created it during install. If
+# KOSHI_NS_PREEXISTING is unset (e.g. a different shell session), preserve it.
+if [ "${KOSHI_NS_PREEXISTING:-true}" = "false" ]; then
+  echo "About to delete namespace $KOSHI_NS (recorded as created by this evaluation)."
+  read -rp "Type the namespace name to confirm deletion: " CONFIRM
+  [ "$CONFIRM" = "$KOSHI_NS" ] && kubectl --context "$KUBE_CONTEXT" delete namespace "$KOSHI_NS"
+else
+  echo "Preserving namespace $KOSHI_NS (pre-existing or ownership unknown)."
+fi
+```
+
+### Verify Koshi is gone (exact names, no fuzzy matching)
+
+```bash
+kubectl --context "$KUBE_CONTEXT" get mutatingwebhookconfiguration "${RELEASE}-koshi-injector"   # NotFound
+kubectl --context "$KUBE_CONTEXT" get clusterrole "${RELEASE}-koshi-injector" "${RELEASE}-koshi-cert-gen"          # NotFound
+kubectl --context "$KUBE_CONTEXT" get clusterrolebinding "${RELEASE}-koshi-injector" "${RELEASE}-koshi-cert-gen"   # NotFound
+kubectl --context "$KUBE_CONTEXT" get serviceaccount "${RELEASE}-koshi-cert-gen" -n "$KOSHI_NS"   # NotFound
+kubectl --context "$KUBE_CONTEXT" get secret "${RELEASE}-koshi-webhook-tls" -n "$KOSHI_NS"        # NotFound
+helm --kube-context "$KUBE_CONTEXT" status "$RELEASE" -n "$KOSHI_NS"                              # release: not found
+
+# No residual sidecars remain in the adopted namespace (empty unless you accepted residuals):
+kubectl --context "$KUBE_CONTEXT" get pods -n "$NS" -o json \
+  | jq -r '.items[] | select(any(.spec.containers[]; .name=="koshi-listener")) | .metadata.name'
+```
+
+## Tested compatibility
+
+This records only what has actually been exercised in this repository. Other environments are **not yet validated** — that means untested, not unsupported.
+
+- **Runtime-tested (local validation of the demo/onboarding flow):** macOS 26.3.1 on Apple Silicon; **Docker CLI 29.4.0** with Docker Desktop (the Docker Engine/Desktop-app versions were not separately recorded); **kind 0.31.0**; **kubectl client 1.34.1**; **Kubernetes server/node 1.35.0** (kind node image `kindest/node:v1.35.0`).
+- **Build-configured only (not a tested cluster runtime):** the release workflow builds the runtime image for `linux/amd64` and `linux/arm64`.
+- **Not yet validated:** managed distributions (EKS, GKE, AKS), other Kubernetes versions, and restricted Pod Security Standards / admission configurations.
 
 ## Next Steps
 

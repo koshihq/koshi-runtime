@@ -41,12 +41,8 @@ preflight() {
         echo "ERROR: Docker daemon is not running. Start Docker and retry." >&2
         exit 1
     fi
-    # Port 15080 is the metrics/proxy port-forward target on 127.0.0.1.
-    if (exec 3<>/dev/tcp/127.0.0.1/15080) 2>/dev/null; then
-        exec 3>&- 3<&- 2>/dev/null || true
-        echo "ERROR: port 15080 on 127.0.0.1 is already in use. Free it and retry." >&2
-        exit 1
-    fi
+    # No host-port check needed: verification reads metrics via in-pod curl, not a
+    # host port-forward, so localhost:15080 on the host is irrelevant.
     echo "Preflight OK (kind needs roughly 2 CPU and 2-4 GB free for Docker)."
 }
 
@@ -247,4 +243,8 @@ echo "  # with the port-forward above running:"
 echo "  curl http://localhost:15080/metrics | grep koshi_listener"
 echo "  curl http://localhost:15080/status | jq ."
 echo ""
-echo "To clean up: ./teardown.sh"
+if [ "$PWD" = "$SCRIPT_DIR" ]; then
+  echo "To clean up: ./teardown.sh"
+else
+  echo "To clean up: ./demo/local/teardown.sh  (or ./teardown.sh from the demo/local directory)"
+fi

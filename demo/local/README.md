@@ -37,6 +37,14 @@ This demo creates a local kind cluster, installs Koshi in listener mode, injects
 
 ## Step-by-Step Walkthrough
 
+> **`./setup.sh` is the authoritative, validated path.** The steps below are
+> **explanatory** — they show what the script does, but intentionally omit the robustness
+> the automation adds and should not be treated as a second validated implementation. In
+> particular, `setup.sh` adds: injector-readiness handling, sidecar **injection retry**
+> (the webhook may not be serving the instant `rollout status` returns), rollout-completion
+> waits, **pinning one concrete pod** for every check, and **telemetry delta** assertions
+> (new events and an increased decision counter). For real validation, run `./setup.sh`.
+
 > **Context safety:** every `kubectl`/`helm` command below is pinned to the demo
 > cluster with `--context kind-koshi-demo` / `--kube-context kind-koshi-demo`, so the
 > manual path can never act on another cluster — even if your current context points
@@ -289,15 +297,19 @@ See [`examples/sidecar-custom-configmap.yaml`](../../examples/sidecar-custom-con
 
 ## Using Released Artifacts
 
-To use published artifacts on a real cluster with real AI API providers:
+To use published artifacts on a real cluster with real AI API providers (this targets a
+**real** cluster, not the kind demo — pin its context explicitly):
 
 ```bash
-helm install koshi oci://ghcr.io/koshihq/charts/koshi \
+KUBE_CONTEXT=your-cluster-context   # kubectl config get-contexts
+
+helm --kube-context "$KUBE_CONTEXT" install koshi oci://ghcr.io/koshihq/charts/koshi \
   --version 0.2.12 \
-  --namespace koshi-system --create-namespace
+  --namespace koshi-system --create-namespace --wait --timeout 120s
 ```
 
-For onboarding on a real cluster, see [Koshi Onboarding](../../docs/onboarding.md).
+This is a bare install reference. For the canonical context-pinned, canary-first flow on a
+real cluster (verify → adopt → rollback), see [Koshi Onboarding](../../docs/onboarding.md).
 
 ## Cleanup
 

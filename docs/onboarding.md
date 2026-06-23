@@ -169,6 +169,11 @@ failed=false
 
 The assertion checks **identity and types**, not "every field populated": on an `allow` decision `reason_code` is legitimately empty, `model` is currently emitted empty, and `actual_tokens` is `0`. In listener mode `estimated_tokens` echoes the request's `max_tokens`, so asserting `4242` gives a distinctive, unambiguous match.
 
+> **Future automation (not in this release):** this block is copy-paste-heavy. A
+> context-explicit, dry-run-first, credential-free helper (e.g. `scripts/koshi-canary-verify.sh`)
+> could wrap the pin → inject/base-URL → traffic → delta-assertion sequence. Tracked as a
+> follow-up; it is intentionally not bundled into the docs so it can carry its own tests.
+
 ### Optional: prove a real upstream call (OpenAI)
 
 The check above proves Koshi emits governance signal — but because the listener emits *before* proxying, it would pass even if the upstream call failed. To prove a successful end-to-end round-trip, make one real OpenAI call.
@@ -218,8 +223,10 @@ kubectl --context "$KUBE_CONTEXT" delete namespace "$CANARY_NS"
 Once the canary passes, opt your real workload in. Fill in your own values (no angle brackets):
 
 ```bash
-NS=your-namespace      # replace with your values
-APP=your-deployment    # replace with your values
+NS=your-namespace        # replace with your values
+APP=your-deployment      # your Deployment name
+APP_CONTAINER=your-app   # the workload's main app container (NOT the koshi-listener
+                         # sidecar) — the verify step below prints the pod's container names
 ```
 
 > **Namespace-label blast radius.** Labeling a namespace
@@ -270,10 +277,23 @@ kubectl --context "$KUBE_CONTEXT" get pod -n "$NS" "$POD" \
 kubectl --context "$KUBE_CONTEXT" logs -n "$NS" "$POD" -c koshi-listener --tail=50 | \
   jq 'select(.stream == "event")'
 
-# Metrics via in-pod curl (use your app container's name if it is not the first container)
-kubectl --context "$KUBE_CONTEXT" exec -n "$NS" "$POD" -- \
+# Metrics via in-pod curl, from the app container you named above.
+kubectl --context "$KUBE_CONTEXT" exec -n "$NS" "$POD" -c "$APP_CONTAINER" -- \
   curl -fsS --max-time 5 http://localhost:15080/metrics | grep koshi_listener
 ```
+
+### Adopting a non-Deployment workload
+
+Deployment is the documented happy path above. Other controllers work, but you must adapt the restart and ownership-validation steps — they are **not** automated, and each still needs separate operator approval:
+
+| Controller | (Re)inject by | Ownership validation (pinned `$POD` →) |
+|---|---|---|
+| **Deployment** (happy path) | `rollout restart deployment/"$APP"` | pod → ReplicaSet → Deployment `== $APP` (two hops, as shown above) |
+| **StatefulSet** / **DaemonSet** | `rollout restart <kind>/"$APP"` | pod → controller `== $APP` (one hop — the pod's controller owner *is* the workload) |
+| **Job** | delete & re-create from its manifest (no `rollout restart`) | pod → Job `== $APP` (one hop) |
+| **standalone Pod** | delete & re-create the pod | no controller owner — validate by pod name |
+
+For StatefulSet/DaemonSet/Job, drop the pod→ReplicaSet hop in the validation step above: compare the pinned pod's controller owner reference directly against `$APP`.
 
 ## Troubleshooting: No Events Appearing
 
@@ -533,7 +553,13 @@ See [`examples/sidecar-custom-deployment.yaml`](../examples/sidecar-custom-deplo
 
 ## Stop evaluating Koshi
 
-A full rollback. Which path applies depends on whether you only ran the canary or also adopted a real workload. All commands are context-pinned and use the `$RELEASE`/`$KOSHI_NS` variables from [Scope variables](#scope-variables).
+A full rollback. All commands are context-pinned and use the `$RELEASE`/`$KOSHI_NS` variables from [Scope variables](#scope-variables).
+
+**Pick your path:**
+
+1. **Canary only** (no real workload adopted) → delete the canary namespace, then run *Uninstall + leftover cleanup*.
+2. **After adoption** → restart injected workloads first (the invariant below), then run *Uninstall + leftover cleanup*.
+3. **Always finish** with *Delete the namespace (only if the evaluation created it)* and *Verify Koshi is gone*.
 
 ### Before real-workload adoption (only the canary was touched)
 
@@ -546,6 +572,8 @@ Then run **Uninstall + leftover cleanup** below.
 ### After adoption — restart injected workloads first (rollback invariant)
 
 Removing the namespace label stops *future* injection but does not remove sidecars from running pods. Because the label injected the sidecar into **every** pod created or scaled during the evaluation, restarting only `$APP` may leave sidecars in other workloads.
+
+**Step 1 — stop future injection and inventory what carries the sidecar:**
 
 ```bash
 # Stop future injection.
@@ -562,13 +590,11 @@ kubectl --context "$KUBE_CONTEXT" get pods -n "$NS" -o json \
   | sort -u
 ```
 
-Resolve each owner (a `ReplicaSet/<rs>` belongs to a Deployment — look up its owner) and **report** the list. **Do not restart automatically.** For each workload the operator approves, restart it with the controller-appropriate action:
+**Step 2 — report and get per-workload approval.** Resolve each owner (a `ReplicaSet/<rs>` belongs to a Deployment — look up its owner) and **report** the list. **Do not restart automatically.**
 
-- **Deployment / StatefulSet / DaemonSet:** `kubectl --context "$KUBE_CONTEXT" rollout restart <kind>/<name> -n "$NS"` then `rollout status`.
-- **Job / standalone Pod:** delete and recreate from its source manifest (no `rollout restart`).
-- **Unknown or ambiguous ownership:** stop and resolve manually before continuing.
+**Step 3 — restart each approved workload** by its controller kind, using the restart/recreate action from the [non-Deployment adoption table](#adopting-a-non-deployment-workload) (Deployment/StatefulSet/DaemonSet → `rollout restart` + `rollout status`; Job/standalone Pod → delete & recreate). **Stop on unknown or ambiguous ownership.**
 
-> **Rollback is incomplete** until every injected workload has been restarted **or** you explicitly accept leaving residual Koshi sidecars running. Do not proceed to uninstall otherwise.
+> **Step 4 — invariant gate. Rollback is incomplete** until every injected workload has been restarted **or** you explicitly accept leaving residual Koshi sidecars running. Do not proceed to uninstall otherwise.
 
 ### Uninstall + leftover cleanup
 

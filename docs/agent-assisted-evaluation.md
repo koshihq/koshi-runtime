@@ -118,11 +118,12 @@ PHASE 2 (manual-approval mode):
   command — directly in my own terminal. You must never run, capture, echo, store, or relay
   that block or my key through your tool interface.
 - Before adopting any real workload: require a SEPARATE approval and confirm the adoption
-  inputs with me — NS, APP, and POD_SELECTOR. Validate that the pinned pod's controller
-  owner reference resolves to APP; STOP on any ambiguity or ownership mismatch. The canonical
-  onboarding assumes Deployment adoption — a non-Deployment controller (StatefulSet,
-  DaemonSet, Job, or standalone pod) requires adapting the documented flow and a separate
-  approval.
+  inputs with me — NS, APP, POD_SELECTOR, and APP_CONTAINER (the workload's app container,
+  used for in-pod metrics). Validate that the pinned pod's controller owner reference
+  resolves to APP; STOP on any ambiguity or ownership mismatch. The canonical onboarding
+  assumes Deployment adoption — a non-Deployment controller (StatefulSet, DaemonSet, Job, or
+  standalone pod) requires adapting the documented flow (see the non-Deployment adoption
+  table in docs/onboarding.md) and a separate approval.
 - STOP and wait for a SEPARATE approval before cleanup. Cleanup is NOT just deleting the
   canary namespace — in BOTH cases the Helm release and its leftover cluster-scoped
   resources must be removed and verified:

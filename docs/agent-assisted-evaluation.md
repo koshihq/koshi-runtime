@@ -73,8 +73,10 @@ PHASE 2 (manual-approval mode):
   first) and report: whether the sidecar was injected, the new-event delta, the metric
   (koshi_listener_decisions_total) delta, that the original kube context was restored on
   exit, and anything left running.
-- STOP and wait for a SEPARATE approval before running ./demo/local/teardown.sh, then
-  confirm the kind cluster was deleted.
+- STOP and wait for a SEPARATE approval before teardown. Cleanup is
+  ./demo/local/teardown.sh from the repo root, or ./teardown.sh from the demo/local
+  directory; after I approve, run the one matching your working directory and confirm the
+  kind cluster was deleted.
 
 Rules: treat the canonical scripts as the source of truth — run them as-is, do not rewrite
 them. If scoped context checks, sidecar injection, pod pinning, or the telemetry
@@ -95,7 +97,8 @@ PHASE 1 (planning posture — do not run any shell commands yet):
 - Read docs/onboarding.md. Do NOT rewrite, reorder, or bypass its commands; you will run
   them as written.
 - Present the intended non-mutating checks, the full list of mutations, and every approval
-  gate (Helm install, canary creation, OpenAI Secret, real-workload adoption, cleanup).
+  gate (Helm install, canary creation, optional OpenAI Secret, real-workload adoption, and
+  cleanup — noting cleanup differs for canary-only vs after-adoption).
 - Then stop and wait for me to switch you into manual-approval execution mode.
 
 PHASE 2 (manual-approval mode):
@@ -105,19 +108,38 @@ PHASE 2 (manual-approval mode):
 - STOP and wait for approval before the Helm install and before creating the canary.
 - Run ONLY the canary path first (install + wait for injector + canary verification).
   Report the exact event evidence (event_type=listener_shadow, namespace, workload_name,
-  provider, estimated_tokens, decision_shadow) and the metric delta.
-- OpenAI Secret step: do NOT run it yourself. PAUSE and instruct me to run the documented
-  hidden `read -rs` block directly in my own terminal. You must never execute, capture,
-  echo, store, or relay that command or my key through your tool interface.
-- Require a SEPARATE approval before adopting any real workload, and confirm exactly which
-  Deployment is the target before restarting it.
-- STOP and wait for a SEPARATE approval before cleanup; after I approve, run and verify
-  canary cleanup (kubectl delete namespace for the canary namespace).
+  provider, estimated_tokens, decision_shadow), the metric delta, AND the final result line
+  the block prints — "Canary verification PASSED" or "Canary verification FAILED" (the block
+  returns non-zero on failure). If the canary returns non-zero / prints FAILED, STOP and
+  report; do NOT proceed to the OpenAI step, to adoption, or to treating cleanup as success.
+- Optional OpenAI Secret step (only if I ask for the real-upstream proof): do NOT run it
+  yourself. PAUSE and instruct me to run the documented hidden-key Secret block — both the
+  `read -rs` prompt AND the `printf ... | kubectl create secret ... --from-file=.../dev/stdin`
+  command — directly in my own terminal. You must never run, capture, echo, store, or relay
+  that block or my key through your tool interface.
+- Before adopting any real workload: require a SEPARATE approval and confirm the adoption
+  inputs with me — NS, APP, and POD_SELECTOR. Validate that the pinned pod's controller
+  owner reference resolves to APP; STOP on any ambiguity or ownership mismatch. The canonical
+  onboarding assumes Deployment adoption — a non-Deployment controller (StatefulSet,
+  DaemonSet, Job, or standalone pod) requires adapting the documented flow and a separate
+  approval.
+- STOP and wait for a SEPARATE approval before cleanup. Cleanup is NOT just deleting the
+  canary namespace — in BOTH cases the Helm release and its leftover cluster-scoped
+  resources must be removed and verified:
+    * Canary only (no adoption): delete the canary namespace, then run the documented Helm
+      uninstall + cert-gen RBAC and hook-created TLS Secret cleanup + exact verification.
+    * After real-workload adoption: follow docs/onboarding.md "Stop evaluating Koshi" —
+      remove the namespace label; inventory residual koshi-listener pods and report their
+      resolved controller owners; get my per-workload approval before any restart/delete/
+      recreate; then the same Helm uninstall + cert-gen RBAC + TLS Secret cleanup; delete
+      the namespace only when safe (created by this evaluation); and run the exact
+      name-based verification.
 
 Rules: STOP and report — do not improvise — on an unexpected kube context, missing sidecar
-injection, failed telemetry deltas, or any ambiguity about the target Deployment. Never
-weaken the webhook failurePolicy, broaden namespace restarts, switch clusters, or alter the
-canonical docs/scripts without a separate, explicit change request from me.
+injection, failed telemetry deltas, a FAILED/non-zero canary result, or any ambiguity or
+ownership mismatch about the target workload. Never weaken the webhook failurePolicy,
+broaden to namespace-wide restarts, switch clusters, or alter the canonical docs/scripts
+without a separate, explicit change request from me.
 ```
 
 ## Safety rules
